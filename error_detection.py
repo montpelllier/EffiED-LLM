@@ -1,8 +1,11 @@
+import ast
+
 import ollama
 import pandas
 
-from prompt_template import generate_pattern_detect_func_prompt
-from util import extract_functions, execute_function
+from prompt_template import build_pattern_detect_func_prompt, build_typo_detect_prompt, \
+    generate_cross_column_error_prompt, build_typo_detect_prompt_v2
+from util import extract_functions, split_list
 
 
 def get_top_percent_values_with_avg_diff(series: pandas.Series, threshold: float = 0.9, n: float = 2.0) -> list:
@@ -99,9 +102,9 @@ def generate_pattern_detection_functions(data: pandas.DataFrame, attribute: str)
     value_cnt = data[attribute].value_counts(normalize=True)
     main_values = get_main_values(value_cnt)
 
-    prompt = generate_pattern_detect_func_prompt(main_values)
+    prompt = build_pattern_detect_func_prompt(main_values)
     print(prompt)
-
+    print("======================")
     response = ollama.generate(
         model='llama3.1:8b',
         prompt=prompt,
@@ -111,10 +114,87 @@ def generate_pattern_detection_functions(data: pandas.DataFrame, attribute: str)
     function_list = extract_functions(response)
     return function_list
 
+
+def generate_typo_dict(data: pandas.DataFrame, attribute: str, verbose=False):
+    values = data[attribute].value_counts().keys().tolist()
+    prompt = build_typo_detect_prompt(attribute, values)
+
+    response = ollama.generate(
+        model='llama3.1:8b',
+        prompt=prompt,
+    ).response
+
+    if verbose:
+        print(prompt)
+        print("======================")
+        print(response)
+
+    try:
+        typo_dict = ast.literal_eval(response)
+    except Exception as e:
+        print(f'Error parsing response: {response}: {e}')
+        typo_dict = {}
+
+    return typo_dict
+
+
+def find_all_typo(data: pandas.DataFrame, attribute: str, verbose=False) -> set:
+    values = data[attribute].value_counts().keys().tolist()
+    value_groups = split_list(values, 100)
+    print(f"Total values: {len(values)}")
+    typo_set = set()
+
+    for i, group in enumerate(value_groups):
+        prompt = build_typo_detect_prompt_v2(attribute, group)
+        response = ollama.generate(
+            model='llama3.1:8b',
+            prompt=prompt,
+        ).response
+
+        if verbose:
+            print(f"\n--- Prompt Group {i + 1} ---")
+            print(prompt)
+            print("Response:")
+            print(response)
+            print("======================")
+
+        try:
+            typo_list = ast.literal_eval(response)
+            typo_set.update(typo_list)
+        except Exception as e:
+            print(f'Error parsing response for group {i + 1}: {response}: {e}')
+            continue
+
+    return typo_set
+
+
 def detect_typo(data: pandas.DataFrame, attribute: str) -> list:
-    """
-    检测数据集中是否存在模式违法。
-    """
-    value_cnt = data[attribute].value_counts(normalize=True)
-    main_values = get_main_values(value_cnt)
-    return None
+    # typo_dict = generate_typo_dict(data, attribute)
+    #
+    # typo_vector = []
+    # for value in data[attribute]:
+    #     if value in typo_dict:
+    #         typo_vector.append(typo_dict[value])
+    #     else:
+    #         print(f"Value '{value}' not found in typo_dict.")
+    #         typo_vector.append(False)
+    typo_set = find_all_typo(data, attribute)
+    print(len(typo_set), typo_set)
+    typo_vector = [value not in typo_set for value in data[attribute]]
+
+    return typo_vector
+
+
+def generate_rule_detection_functions(data: pandas.DataFrame, target_column, related_columns, sample_size=50):
+    related_df = data[[target_column] + related_columns].drop_duplicates()
+    sampled_df = related_df.sample(n=min(sample_size, len(related_df)), random_state=42)
+
+    sample_rows_str = '\n'.join(str(row) for row in sampled_df.to_dict(orient='records'))
+    prompt = generate_cross_column_error_prompt(target_column, sample_rows_str)
+    print(prompt)
+    print("======================")
+    response = ollama.generate(
+        model='llama3.1:8b',
+        prompt=prompt,
+    ).response
+    print(response)
