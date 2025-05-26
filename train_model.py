@@ -1,5 +1,6 @@
 import math
 import os
+import random
 
 import numpy as np
 import pandas as pd
@@ -40,6 +41,38 @@ class Vocab(dict):
 
 
 # === Model ===
+class RowColMultiHeadAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads, dropout=0.1):
+        super().__init__()
+        self.row_attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
+        self.col_attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
+        self.linear = nn.Linear(embed_dim * 2, embed_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.norm = nn.LayerNorm(embed_dim)
+
+    def forward(self, x, row_mask=None, col_mask=None):
+        # x shape: (B, R, C, D)
+        B, R, C, D = x.shape
+
+        # 行内注意力（按行做注意力，序列长度是C）
+        row_seq = x.reshape(B * R, C, D)  # (B*R, C, D)
+        row_out, _ = self.row_attn(row_seq, row_seq, row_seq, key_padding_mask=row_mask)  # (B*R, C, D)
+        row_out = row_out.reshape(B, R, C, D)
+
+        # 列内注意力（按列做注意力，序列长度是R）
+        col_seq = x.permute(0, 2, 1, 3).reshape(B * C, R, D)  # (B*C, R, D)
+        col_out, _ = self.col_attn(col_seq, col_seq, col_seq, key_padding_mask=col_mask)  # (B*C, R, D)
+        col_out = col_out.reshape(B, C, R, D).permute(0, 2, 1, 3)  # (B, R, C, D)
+
+        # 融合并残差连接
+        combined = torch.cat([row_out, col_out], dim=-1)  # (B, R, C, 2*D)
+        combined = self.linear(combined)
+        combined = self.dropout(combined)
+        out = self.norm(x + combined)  # 残差连接
+
+        return out
+
+
 class TableErrorDetector(nn.Module):
     def __init__(self, vocab_size, max_rows, max_cols, embed_dim=128, num_heads=4, num_layers=4,
                  dropout=0.1, hidden_dim=None, position_encoding='sinusoidal'):
@@ -81,6 +114,10 @@ class TableErrorDetector(nn.Module):
             batch_first=True
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        # self.layers = nn.ModuleList([
+        #     RowColMultiHeadAttention(embed_dim, num_heads, dropout=dropout)
+        #     for _ in range(num_layers)
+        # ])
         self.norm = nn.LayerNorm(embed_dim)
 
         # Classifier
@@ -89,14 +126,11 @@ class TableErrorDetector(nn.Module):
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.LayerNorm(hidden_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim // 2, 1)
+            nn.Linear(hidden_dim, 1)
         )
 
-    def _build_sinusoidal_pe(self, length, dim):
+    @classmethod
+    def _build_sinusoidal_pe(cls, length, dim):
         """Generates sinusoidal PE matrix of shape [length, dim]"""
         pe = torch.zeros(length, dim)
         position = torch.arange(0, length, dtype=torch.float).unsqueeze(1)
@@ -123,6 +157,37 @@ class TableErrorDetector(nn.Module):
         # Classification
         logits = self.classifier(x).squeeze(-1)
         return logits
+
+    # def forward(self, token_ids, row_ids, col_ids):
+    #     # token_ids: (B, C) —— 每个样本是一个“整行”有C列
+    #     B, C = token_ids.shape
+    #     device = token_ids.device
+    #
+    #     # 词嵌入
+    #     x = self.token_embed(token_ids)  # (B, C, D)
+    #
+    #     # 行列位置编码
+    #     row_ids = torch.arange(B, device=device).unsqueeze(1).expand(B, C)  # (B, C)
+    #     col_ids = torch.arange(C, device=device).unsqueeze(0).expand(B, C)  # (B, C)
+    #     row_pe = self.row_pe[row_ids]  # (B, C, D)
+    #     col_pe = self.col_pe[col_ids]  # (B, C, D)
+    #
+    #     x = x + row_pe + col_pe  # (B, C, D)
+    #     x = self.dropout(x)
+    #
+    #     # reshape 为 (B, R, C, D)，这里 R 实际就是 B，换一个名字更清晰
+    #     x = x.unsqueeze(1)  # → (B, 1, C, D)，即每个 batch 只有一行
+    #
+    #     # 多层行列解耦注意力
+    #     for layer in self.layers:
+    #         x = layer(x)  # 每层处理 (B, R=1, C, D)
+    #
+    #     x = self.norm(x)  # (B, 1, C, D)
+    #     x = x.squeeze(1)  # → (B, C, D)
+    #
+    #     # 送入分类器，每个 cell 一个预测值
+    #     logits = self.classifier(x).squeeze(-1)  # (B, C)
+    #     return logits
 
 
 # === Utility ===
@@ -159,6 +224,9 @@ tuple[torch.Tensor, torch.Tensor]]:
     train_labels = label_data[train_idx]
     val_labels = label_data[val_idx]
     test_labels = label_data[test_idx]
+    print(train_labels.sum())
+    print(val_labels.sum())
+    print(test_labels.sum())
 
     return (train_tokens, train_labels), (val_tokens, val_labels), (test_tokens, test_labels)
 
@@ -168,6 +236,35 @@ def batchify(token_ids: torch.Tensor, batch_size: int = 32):
     for start_row in range(0, num_rows, batch_size):
         end_row = min(start_row + batch_size, num_rows)
         yield start_row, token_ids[start_row:end_row, :]
+
+
+def batchify_random(token_ids: torch.Tensor, token_labels: torch.Tensor, batch_size: int = 32):
+    num_rows = token_ids.shape[0]
+    indices = list(range(num_rows))
+    random.shuffle(indices)
+
+    for start in range(0, num_rows, batch_size):
+        batch_indices = indices[start:start + batch_size]
+        batch_tokens = token_ids[batch_indices]
+        batch_labels = token_labels[batch_indices]
+        batch_indices_tensor = torch.tensor(batch_indices, dtype=torch.long)
+        yield batch_tokens, batch_labels, batch_indices_tensor
+
+
+def batchify_shuffled_with_labels(token_ids, token_labels: torch.Tensor, batch_size):
+    num_rows = token_ids.size(0)
+    indices = torch.randperm(num_rows)
+    print('indices:', len(indices), indices[:10])  # Print first 10 indices for debugging
+
+    shuffled_tokens = token_ids[indices]
+    shuffled_labels = token_labels[indices]
+
+    for i in range(0, num_rows, batch_size):
+        yield (
+            shuffled_tokens[i:i + batch_size],
+            shuffled_labels[i:i + batch_size],
+            indices[i:i + batch_size],  # keep for row_ids
+        )
 
 
 # === Training ===
@@ -193,7 +290,7 @@ class EarlyStopping:
 
 def train(model: nn.Module = None, model_config: dict = None,
           train_data: torch.Tensor = None, val_data: torch.Tensor = None,
-          label_data: torch.Tensor = None, val_labels: torch.Tensor = None,
+          train_labels: torch.Tensor = None, val_labels: torch.Tensor = None,
           epochs: int = 50, batch_size: int = 32, lr: float = 1e-3, patience: int = 7,
           device: str = 'cpu') -> nn.Module:
     """
@@ -204,7 +301,7 @@ def train(model: nn.Module = None, model_config: dict = None,
         model_config: Model configuration dictionary, used to create model if model not provided
         train_data: Training data
         val_data: Validation data
-        label_data: Training labels
+        train_labels: Training labels
         val_labels: Validation labels
         epochs: Number of training epochs
         batch_size: Batch size for training
@@ -216,7 +313,7 @@ def train(model: nn.Module = None, model_config: dict = None,
         The best model from training
     """
     # Check required parameters
-    if train_data is None or val_data is None or label_data is None or val_labels is None:
+    if train_data is None or val_data is None or train_labels is None or val_labels is None:
         raise ValueError("Training and validation data cannot be None")
 
     # Create or use model
@@ -230,9 +327,21 @@ def train(model: nn.Module = None, model_config: dict = None,
 
     model.to(device)
 
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+    # optimizer = optim.Adam(model.parameters(), lr=lr)
+    # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
     loss_fn = nn.BCEWithLogitsLoss()
+
+    # 更推荐使用 AdamW，支持权重衰减，可提高泛化能力
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
+
+    # Warmup + Cosine Annealing 更适合大模型训练
+    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer,
+        T_0=10,  # 每隔多少 epoch 重启一次
+        T_mult=2,  # 重启时周期扩大倍数
+        eta_min=1e-6  # 最小学习率
+    )
+
     early_stopping = EarlyStopping(patience=patience)
 
     epoch_losses = []
@@ -240,29 +349,43 @@ def train(model: nn.Module = None, model_config: dict = None,
     best_model_state = None
     best_val_loss = float('inf')
 
+    num_rows, num_cols = train_data.shape
+    # total_samples = 3 * num_rows
+    # num_batches = (total_samples + batch_size - 1) // batch_size  # 向上取整
+    # batch_sampler = batchify_random(train_data, batch_size)
+    # print('Total samples:', total_samples, 'Number of batches:', num_batches, 'batch size:', batch_size, 'num_rows:', num_rows)
+
     for epoch in range(epochs):
         model.train()
         total_loss = 0
-        for start_row, batch_tokens in batchify(train_data, batch_size):
-            batch_size_cur, seq_len = batch_tokens.shape
-            row_ids = torch.arange(start_row, start_row + batch_size_cur).unsqueeze(1).expand(batch_size_cur, seq_len)
-            col_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size_cur, seq_len)
 
+        # for start_row, batch_tokens in batchify(train_data, batch_size):
+        for batch_tokens, batch_labels, batch_rows in batchify_shuffled_with_labels(train_data, train_labels,
+                                                                                    batch_size):
+            batch_size_cur, seq_len = batch_tokens.shape  # current batch size and number of columns
+            row_ids = batch_rows.unsqueeze(1).expand(-1, seq_len)  # (B, C)
+            col_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size_cur, seq_len)  # (B, C)
+
+            # Move to device
             batch_tokens = batch_tokens.to(device)
+            batch_labels = batch_labels.to(device)
             row_ids = row_ids.to(device)
             col_ids = col_ids.to(device)
-            target = label_data[start_row:start_row + batch_size_cur, :].flatten().unsqueeze(0).to(device)
 
-            input_flat = batch_tokens.flatten().unsqueeze(0)
+            # Flatten for model input
+            input_flat = batch_tokens.flatten().unsqueeze(0)  # (1, B*C)
             row_flat = row_ids.flatten().unsqueeze(0)
             col_flat = col_ids.flatten().unsqueeze(0)
+            target = batch_labels.flatten().unsqueeze(0)  # (1, B*C)
 
+            # Forward and loss
             logits = model(input_flat, row_flat, col_flat)
             loss = loss_fn(logits, target)
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            scheduler.step()
             total_loss += loss.item()
 
         avg_train_loss = total_loss / (train_data.shape[0] / batch_size)
@@ -272,20 +395,22 @@ def train(model: nn.Module = None, model_config: dict = None,
         model.eval()
         val_loss = 0
         with torch.no_grad():
-            for start_row, batch_tokens in batchify(val_data, batch_size):
+            for batch_tokens, batch_labels, batch_rows in batchify_shuffled_with_labels(val_data, val_labels,
+                                                                                        batch_size):
                 batch_size_cur, seq_len = batch_tokens.shape
-                row_ids = torch.arange(start_row, start_row + batch_size_cur).unsqueeze(1).expand(batch_size_cur,
-                                                                                                  seq_len)
-                col_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size_cur, seq_len)
+
+                row_ids = batch_rows.unsqueeze(1).expand(-1, seq_len)  # (B, C)
+                col_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size_cur, seq_len)  # (B, C)
 
                 batch_tokens = batch_tokens.to(device)
+                batch_labels = batch_labels.to(device)
                 row_ids = row_ids.to(device)
                 col_ids = col_ids.to(device)
-                target = val_labels[start_row:start_row + batch_size_cur, :].flatten().unsqueeze(0).to(device)
 
-                input_flat = batch_tokens.flatten().unsqueeze(0)
+                input_flat = batch_tokens.flatten().unsqueeze(0)  # (1, B*C)
                 row_flat = row_ids.flatten().unsqueeze(0)
                 col_flat = col_ids.flatten().unsqueeze(0)
+                target = batch_labels.flatten().unsqueeze(0)  # (1, B*C)
 
                 logits = model(input_flat, row_flat, col_flat)
                 loss = loss_fn(logits, target)
@@ -298,11 +423,12 @@ def train(model: nn.Module = None, model_config: dict = None,
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             best_model_state = model.state_dict().copy()
+            print('New best model found at epoch', epoch + 1, 'with validation loss:', avg_val_loss)
 
         print(f"Epoch {epoch + 1}/{epochs} - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
 
         # Learning rate scheduling
-        scheduler.step(avg_val_loss)
+        # scheduler.step(avg_val_loss)
 
         # Early stopping
         early_stopping(avg_val_loss)
@@ -491,10 +617,10 @@ def check_low_conf_error_rate(low_conf_samples, labels):
 
 if __name__ == '__main__':
     # dataset_name = 'flights'
-    # dataset_name = 'movies'
+    dataset_name = 'movies'
     # dataset_name = 'billionaire'
     # dataset_name = 'beers'
-    dataset_name = 'hospital'
+    # dataset_name = 'hospital'
     # dataset_name = 'rayyan'
 
     error_df_csv = f'./data/{dataset_name}_error-01.csv'
@@ -526,14 +652,14 @@ if __name__ == '__main__':
         model_config=model_config,
         train_data=train_set[0],
         val_data=val_set[0],
-        label_data=train_set[1],
+        train_labels=train_set[1],
         val_labels=val_set[1],
         epochs=100,
-        batch_size=128 * 4,
-        lr=5e-4,
-        patience=20,
+        batch_size=256 * 2,
+        lr=1e-3,
+        patience=30,
         device=device
     )
 
     # Evaluate model
-    evaluate(model, test_set[0], test_set[1], batch_size=128 * 4, device=device)
+    evaluate(model, test_set[0], test_set[1], batch_size=256 * 2, device=device)
