@@ -538,33 +538,307 @@ def build_batch_prediction_prompt(
     """
 
     prompt_parts = [
-        "You are given a structured dataset with known combinations of column values and their frequencies.",
-        f"The goal is to predict the most likely value for the target column: '{target_column}', based on related fields.\n",
-        "Below are some high-frequency historical combinations from the dataset:"
+        "You are given a structured dataset with observed combinations of column values and their frequencies.",
+        f"The task is to predict the most likely value for the target column: '{target_column}', based on related fields.",
+        "",
+        "Each historical row below is a previously seen value combination along with how frequently it appeared.",
+        "Higher frequency means the combination is more common in the dataset, but not necessarily correct.",
+        ""
     ]
 
+    # 添加组合样本
     top_combos = combo_frequencies[:max_combos]
+    prompt_parts.append("Historical combinations:")
     for combo in top_combos:
         parts = [f"{k}={v}" for k, v in combo.items() if k != "frequency"]
         parts_str = ", ".join(parts)
         prompt_parts.append(f"- [{parts_str}] → freq: {combo['frequency']}")
 
-    prompt_parts.append("\nNow, for each of the following inputs, predict the most likely value for the target column.")
-
+    # 添加输入
+    prompt_parts.append("\nNow, for each of the following inputs, predict the most likely value for the target column:")
     for i, row in enumerate(input_rows):
         parts = [f"{col}: {row.get(col, 'UNKNOWN')}" for col in related_columns]
         prompt_parts.append(f"{i + 1}. " + ", ".join(parts))
 
+    # 输出格式说明
     prompt_parts.append(
         "\nRespond with a JSON array, where each object contains:\n"
         "- `input_id`: index of the input (starting from 1),\n"
         "- `predicted_value`: the most likely value for the target column.\n"
         "Format:\n[\n"
         "  {\"input_id\": 1, \"predicted_value\": \"value1\"},\n"
-        # "  {\"input_id\": 2, \"predicted_value\": \"value2\"},\n"
+        "  {\"input_id\": 2, \"predicted_value\": \"value2\"},\n"
         "  ...\n"
         "]\n"
-        "Only return the JSON array, no explanation."
+        "Only return the JSON array. Do not include any explanation or text outside the JSON."
     )
 
     return "\n".join(prompt_parts)
+
+
+def build_candidate_selection_prompt(
+    target_column: str,
+    related_columns: list[str],
+    input_rows: list[dict],
+    candidates: list[str]
+) -> str:
+    """
+    构造提示词，要求LLM从候选项中为每组输入相关列值选择最可能的目标列值，允许返回 "None of the above"。
+
+    参数:
+    - target_column: 目标列名（如 'brand'）
+    - related_columns: 相关列名（如 ['category', 'region']）
+    - input_rows: 多个待判断的输入，每项是 dict，如 {'category': 'Electronics', 'region': 'North'}
+    - candidates: 候选 target 值，如 ['Apple', 'Samsung', 'Huawei', 'Sony']
+
+    返回:
+    - prompt: 可传入 LLM 的自然语言提示字符串
+    """
+
+    prompt_parts = [
+        f"You are given structured data with a target column '{target_column}' and related fields: {related_columns}.",
+        "You are asked to predict the most likely value for the target column for each input row, based on the values of the related fields.",
+        "",
+        "You are given a list of candidate values. Prefer selecting from these candidates if any of them is appropriate.",
+        "However, if none of the candidates fits based on the input, you are allowed to generate a new value you think is appropriate.",
+        "", f"Candidates: {candidates}", "\nInputs:"]
+
+    for i, row in enumerate(input_rows):
+        row_str = ", ".join(f"{col}: {row.get(col, 'UNKNOWN')}" for col in related_columns)
+        prompt_parts.append(f"{i + 1}. {row_str}")
+
+    prompt_parts.append(
+        "\nRespond with a JSON array, each element including:\n"
+        "- `input_id`: the input row number (starting from 1),\n"
+        "- `predicted_value`: your predicted value for the target column,\n"
+        "- `source`: either \"candidate\" (if chosen from the provided list) or \"generated\" (if it's a new value).\n"
+        "Example:\n"
+        "[\n"
+        "  {\"input_id\": 1, \"predicted_value\": \"val1\", \"source\": \"candidate\"},\n"
+        "  {\"input_id\": 2, \"predicted_value\": \"val2\", \"source\": \"generated\"}\n"
+        "]\n"
+        "Only return the JSON array. Do not include explanations."
+    )
+
+    return "\n".join(prompt_parts)
+
+
+def build_combined_prediction_prompt(
+    target_column: str,
+    related_columns: list[str],
+    input_rows: list[dict],
+    candidates: list[str] = None,
+    combo_frequencies: list[dict] = None,
+    max_combos: int = 7
+) -> str:
+    """
+    构造提示词，结合高频组合与候选项选择逻辑，引导 LLM 为每组输入预测目标列值。
+
+    参数:
+    - target_column: 目标列名（如 'brand'）
+    - related_columns: 相关列名（如 ['category', 'region']）
+    - input_rows: 多个待判断的输入，每项是 dict，如 {'category': 'Electronics', 'region': 'North'}
+    - candidates: 候选 target 值，如 ['Apple', 'Samsung']，可为 None
+    - combo_frequencies: 高频组合样本，如 [{'brand': 'Apple', 'category': 'Electronics', ..., 'frequency': 3}]，可为 None
+    - max_combos: 最多展示的 combo 记录数
+
+    返回:
+    - prompt: 可用于 LLM 的自然语言提示词
+    """
+
+    prompt_parts = [
+        f"You are given structured data with a target column '{target_column}' and related fields: {related_columns}.",
+        "Your task is to predict the most likely value for the target column for each input row based on the values of the related fields.",
+        ""
+    ]
+
+    # 加入高频组合说明（如果提供）
+    if combo_frequencies:
+        prompt_parts += [
+            "Below are some historical value combinations and how frequently they appeared in the dataset.",
+            "Higher frequency means the combination is more common, but not necessarily correct.",
+            "The historical data may include noisy or incorrect values."
+            "",
+            "Historical combinations:"
+        ]
+        top_combos = combo_frequencies[:max_combos]
+        for combo in top_combos:
+            parts = [f"{k}={v}" for k, v in combo.items() if k != "frequency"]
+            parts_str = ", ".join(parts)
+            prompt_parts.append(f"- [{parts_str}] → freq: {combo['frequency']}")
+        prompt_parts.append("")
+
+    # 加入候选值说明（如果提供）
+    if candidates:
+        prompt_parts += [
+            f"You are also given a list of candidate values for '{target_column}':",
+            f"{candidates}",
+            "",
+            "You should prefer selecting from these candidates if any of them fits well.",
+            "Do not choose a value just because it appears in historical data. Use reasoning based on consistency and plausibility.",
+            "However, if none of the candidates is appropriate based on the input, you may generate a new value.",
+            ""
+        ]
+    else:
+        prompt_parts.append("You may generate any appropriate value for the target column.\n")
+
+    # 输入数据
+    prompt_parts.append("Inputs:")
+    for i, row in enumerate(input_rows):
+        row_str = ", ".join(f"{col}: {row.get(col, 'UNKNOWN')}" for col in related_columns)
+        prompt_parts.append(f"{i + 1}. {row_str}")
+
+    # 返回格式
+    prompt_parts.append(
+        "\nRespond with a JSON array, each element including:\n"
+        "- `input_id`: the input row number (starting from 1),\n"
+        "- `plausible_values`: your predicted values for the target column,\n"
+        "- `source`: \"candidate\" if selected from candidates, or \"generated\" if it's a new value.\n"
+        "Example:\n"
+        "[\n"
+        "  {\"input_id\": 1, \"plausible_values\": [\"val1\",\"val2\"], \"source\": \"candidate\"},\n"
+        "  {\"input_id\": 2, \"plausible_values\": [\"val4\"], \"source\": \"candidate\"}\n"
+        "]\n"
+        "Only return the JSON array. Do not include explanations."
+    )
+
+    return "\n".join(prompt_parts)
+
+def build_constrained_prediction_prompt(
+    target_column: str,
+    related_columns: list[str],
+    input_rows: list[dict],
+    candidates: list[str],
+    combo_frequencies: list[dict] = None,
+    max_combos: int = 7,
+    none_value: str = "None of the above"
+) -> str:
+    """
+    构造 LLM 提示词，仅允许从候选项中选择目标列值，除非非常明确没有合适项。
+
+    参数:
+    - target_column: 要预测的列名
+    - related_columns: 相关列名列表
+    - input_rows: 输入样本，每项为 dict
+    - candidates: 候选 target 值，必选
+    - combo_frequencies: 可选，高频组合（用于上下文参考）
+    - max_combos: 显示组合最大条数
+    - none_value: 无合适值时使用的占位符（默认 "None of the above"）
+
+    返回:
+    - 自然语言提示词字符串
+    """
+
+    prompt_parts = [
+        f"You are given structured data with a target column '{target_column}' and related fields: {related_columns}.",
+        "Your task is to predict the most likely value(s) for the target column in each input row, based on the related fields.",
+        "",
+        f"You may only select from the following candidate values for '{target_column}':",
+        f"{candidates}",
+        "",
+        f"If and only if you are confident that none of the candidate values are suitable, respond with a single value: \"{none_value}\".",
+        f"Do not use \"{none_value}\" unless you are certain all candidates are implausible.",
+        "",
+        "You may return multiple plausible candidate values if they all seem likely based on the input.",
+        ""
+    ]
+
+    if combo_frequencies:
+        prompt_parts += [
+            "You are also provided with historical combinations and how frequently they appeared in the dataset.",
+            "These are for reference and may include noise.",
+            "",
+            "Historical combinations:"
+        ]
+        for combo in combo_frequencies[:max_combos]:
+            combo_str = ", ".join(f"{k}={v}" for k, v in combo.items() if k != "frequency")
+            prompt_parts.append(f"- [{combo_str}] → freq: {combo['frequency']}")
+        prompt_parts.append("")
+
+    prompt_parts.append("Inputs:")
+    for i, row in enumerate(input_rows):
+        row_str = ", ".join(f"{col}: {row.get(col, 'UNKNOWN')}" for col in related_columns)
+        prompt_parts.append(f"{i + 1}. {row_str}")
+
+    prompt_parts.append(
+        "\nRespond with a JSON array. Each object must include:\n"
+        "- `input_id`: the index of the input (starting from 1),\n"
+        "- `predicted_values`: a list of 1 or more selected candidate values, or a single-element list with only \"{none_value}\" if none are suitable.\n"
+        "Example:\n"
+        "[\n"
+        f"  {{\"input_id\": 1, \"predicted_values\": [\"val1\"]}},\n"
+        f"  {{\"input_id\": 2, \"predicted_values\": [\"val2\", \"val3\"]}},\n"
+        f"  {{\"input_id\": 3, \"predicted_values\": [\"{none_value}\"]}}\n"
+        "]\n"
+        "Only return the JSON array. Do not include explanations."
+    )
+
+    return "\n".join(prompt_parts)
+
+
+def build_cell_level_error_detection_prompt(
+    primary_key_name: str,
+    primary_key_value: str,
+    columns: list[str],
+    data_rows: list[dict],
+    frequency_field: str = "frequency",
+    max_rows: int = 10
+) -> str:
+    """
+    Build a general-purpose prompt for cell-level value validation under a fixed primary key.
+
+    Args:
+        primary_key_name: Name of the primary key column
+        primary_key_value: Value of the selected primary key
+        columns: List of column names to evaluate (excluding frequency field)
+        data_rows: List of dicts, each representing one record with values for the columns and frequency
+        frequency_field: The name of the field indicating frequency of the row
+        max_rows: Maximum number of rows to include in the prompt for brevity
+
+    Returns:
+        A string prompt for input into an LLM
+    """
+
+    prompt = [
+        f"You are given multiple records that all share the same value in a primary key column: {primary_key_name} = {primary_key_value}.",
+        "Each record includes values for several columns, along with how often that record appears.",
+        "Your task is to evaluate the reasonableness of each individual column value, row by row.",
+        "",
+        "Do not assume that any specific value is correct by default.",
+        "Focus only on whether each column value appears reasonable based on the patterns across all records.",
+        "Ignore possible mistakes in other columns when judging a value.",
+        "",
+        "Only mark a column value as SUSPICIOUS if it strongly and unambiguously violates a clear and repeated pattern observed across the records.",
+        "Do not flag a value as SUSPICIOUS based on rare deviations or minor differences.",
+        "If you're uncertain or the deviation is not definitive, always label the value as REASONABLE.",
+        # "A column value should be marked as suspicious only if it clearly deviates from more consistent or expected patterns under the same primary key.",
+        "",
+        "Here are the column names to be checked:",
+        ", ".join(columns),
+        "",
+        "Here are the records:"
+    ]
+
+    for i, row in enumerate(data_rows[:max_rows], start=1):
+        parts = [f"{col}: {str(row.get(col, 'UNKNOWN')):<12}" for col in columns]
+        parts_str = " | ".join(parts)
+        freq_str = f"{frequency_field}: {row.get(frequency_field, 1)}"
+        prompt.append(f"{i}. {parts_str} | {freq_str}")
+
+    prompt.append(
+        "\nNow, for each row and each column, indicate whether the value is REASONABLE or SUSPICIOUS.\n"
+        "Respond with a JSON array in this format:\n"
+        "[\n"
+        "  {\n"
+        "    \"row_id\": <index of the row starting from 1>,\n"
+        "    \"column_judgments\": {\n"
+        "      \"ColumnA\": \"REASONABLE\" or \"SUSPICIOUS\","
+        "      \"ColumnB\": \"REASONABLE\" or \"SUSPICIOUS\","
+        "      ...\n"
+        "    }\n"
+        "  }"
+        "]\n"
+        "Only return the correct JSON array. Do not include any explanation or text outside the JSON."
+    )
+
+    return "\n".join(prompt)
