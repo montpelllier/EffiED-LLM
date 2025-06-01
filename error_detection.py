@@ -12,7 +12,7 @@ from prompt_template import build_pattern_detect_func_prompt, build_typo_detect_
     build_cell_level_error_detection_prompt
 from util import extract_functions, split_list, fix_and_parse_list, is_column_numeric, get_top_nmi_relations, \
     get_target_related_combination_freq, extract_ans_json, extract_json_list, cluster_columns_by_nmi, \
-    label_cells_from_judgments, select_key_column
+    label_cells_from_judgments, select_key_column, aggregate_consistent_predictions
 
 
 def get_top_percent_values_with_avg_diff(series: pandas.Series, threshold: float = 0.9, n: float = 2.0) -> list:
@@ -279,33 +279,6 @@ def check_error(row_data, target_column, related_columns, data_name, target_valu
     return is_valid
 
 
-def check_multi_col_err():
-    pass
-
-
-if __name__ == '__main__':
-    # dataset_name = 'flights'
-    # dataset_name = 'movies'
-    # dataset_name = 'billionaire'
-    # dataset_name = 'beers'
-    dataset_name = 'hospital'
-    # dataset_name = 'rayyan'
-    # dataset_name = 'tax50k'
-
-    data_clean = pd.read_csv(f'./data/{dataset_name}_clean.csv', dtype=str)
-    data_error = pd.read_csv(f'./data/{dataset_name}_error-01.csv', dtype=str)
-
-    col_name = 'State'
-    related_col_dict = get_top_nmi_relations(data_error, 0.9, 3)
-    row = data_error.loc[436]
-    vc = data_error[col_name].value_counts(normalize=True)
-    comb_vc = data_error[[col_name] + related_col_dict[col_name]].value_counts().reset_index()
-    print(comb_vc)
-    print(vc)
-    ans = check_error(row, col_name, related_col_dict[col_name], dataset_name, vc, comb_vc)
-    print(ans)
-
-
 def gen_combination_freqs(data: pandas.DataFrame, key_column: str, related_columns: list[str], sample_size: int = 10) -> \
         tuple[list[list[dict]], pandas.DataFrame]:
     valid_data = data[related_columns].dropna(how='all')
@@ -331,7 +304,8 @@ def gen_combination_freqs(data: pandas.DataFrame, key_column: str, related_colum
     return combination_freqs_lst, freq_dataframe
 
 
-def detect_rule_violation(data, nmi_matrix, verbose=False):
+def detect_rule_violation(data, nmi_matrix, model='llama3.1:8b', sample=10, repeat=1, k=10, verbose=False):
+    print(f'Detecting rule violation with model: {model}, sample: {sample}, repeat: {repeat}, top k: {k}.\n')
     column_groups = cluster_columns_by_nmi(nmi_matrix, threshold=0.4)
     label_df = pd.DataFrame(data=None, index=data.index, columns=data.columns, dtype=object)
 
@@ -339,10 +313,12 @@ def detect_rule_violation(data, nmi_matrix, verbose=False):
         if len(column_group) < 2:
             # print(f"Column group {column_group} has less than 2 columns, skipping.")
             continue
-        key_column = select_key_column(nmi_matrix, column_group)
-        print(f'Selected key column: \'{key_column}\' from group {column_group}')
 
-        combo_frequency_list, freq_df = gen_combination_freqs(data, key_column, column_group, sample_size=10)
+        key_column = select_key_column(nmi_matrix, column_group)
+        print(f'\nSelected key column: \'{key_column}\' from group {column_group}\n')
+
+        combo_frequency_list, freq_df = gen_combination_freqs(data, key_column, column_group, sample_size=sample)
+
         for combo_frequency in combo_frequency_list:
 
             prompt = build_cell_level_error_detection_prompt(
@@ -350,25 +326,40 @@ def detect_rule_violation(data, nmi_matrix, verbose=False):
                 primary_key_value=combo_frequency[0][key_column],
                 columns=column_group,
                 data_rows=combo_frequency,
+                top_k=k
             )
 
-            # 生成模型结果
-            response = ollama.generate(prompt=prompt, model='llama3.1:8b').response
             # res_pattern = r'\[\s*(?:\{[^{]*"input_id"\s*:\s*\d+[^{]*"predicted_values"\s*:\s*\[[^\]]*\][^}]*\}\s*,?\s*)+\]'
             res_pattern = r'\[\s*(?:\{\s*"row_id"\s*:\s*\d+\s*,\s*"column_judgments"\s*:\s*\{\s*(?:"[^"]+"\s*:\s*"(?:REASONABLE|SUSPICIOUS)"(?:\s*,\s*)?)+\s*\}\s*\}(?:\s*,\s*)?)+\s*\]'
-            result = extract_json_list(response, res_pattern)
+
+            response_list = []
+            for _ in range(repeat):  # N = 3~5 是常见范围
+                response = ollama.generate(prompt=prompt, model=model).response
+                result = extract_json_list(response, res_pattern)
+                if result:
+                    response_list.append(result)
+
+            final_judgment = aggregate_consistent_predictions(response_list)
+            # 生成模型结果
+            # response = ollama.generate(prompt=prompt, model=model).response
+            # result = extract_json_list(response, res_pattern)
 
             if verbose:
                 print(f"\n--- Prompt for column group {column_group} ---")
                 print(prompt)
-                print(f"\nModel response:\t{response}")
-                print(f"\nExtracted JSON response:\t{result}")
+                # print(f"\nModel response:\t{response}")
+                # print(f"\nExtracted JSON response:\t{result}")
+                print(final_judgment)
 
-            if result is not None:
-                print(f'response length: {len(result)}, combo frequency length: {len(combo_frequency)}')
-                label_df = label_cells_from_judgments(label_df, result, data, combo_frequency, key_column)
+            if final_judgment is not None:
+                # print(f'response length: {len(result)}, combo frequency length: {len(combo_frequency)}')
+                for combo in combo_frequency:
+                    print(combo)
+                # print(response)
+                label_df = label_cells_from_judgments(label_df, final_judgment, data, combo_frequency, key_column)
             else:
-                print(response)
-                print(combo_frequency[:10])
+                print(f'Json extraction failed.')
+                # print(response)
+            #     print(combo_frequency[:10])
 
     return label_df

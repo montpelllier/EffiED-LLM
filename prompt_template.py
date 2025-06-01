@@ -782,7 +782,7 @@ def build_cell_level_error_detection_prompt(
     columns: list[str],
     data_rows: list[dict],
     frequency_field: str = "frequency",
-    max_rows: int = 10
+    top_k: int = 10
 ) -> str:
     """
     Build a general-purpose prompt for cell-level value validation under a fixed primary key.
@@ -793,7 +793,7 @@ def build_cell_level_error_detection_prompt(
         columns: List of column names to evaluate (excluding frequency field)
         data_rows: List of dicts, each representing one record with values for the columns and frequency
         frequency_field: The name of the field indicating frequency of the row
-        max_rows: Maximum number of rows to include in the prompt for brevity
+        top_k: Maximum number of rows to include in the prompt for brevity
 
     Returns:
         A string prompt for input into an LLM
@@ -819,7 +819,7 @@ def build_cell_level_error_detection_prompt(
         "Here are the records:"
     ]
 
-    for i, row in enumerate(data_rows[:max_rows], start=1):
+    for i, row in enumerate(data_rows[:top_k], start=1):
         parts = [f"{col}: {str(row.get(col, 'UNKNOWN')):<12}" for col in columns]
         parts_str = " | ".join(parts)
         freq_str = f"{frequency_field}: {row.get(frequency_field, 1)}"
