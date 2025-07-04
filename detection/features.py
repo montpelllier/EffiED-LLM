@@ -1,13 +1,18 @@
 import concurrent.futures
+import math
 from collections import Counter, defaultdict
 
 import numpy as np
 import pandas as pd
+from kneed import KneeLocator
+from numpy import ndarray
 from pandas import DataFrame, Series
 from scipy.cluster.hierarchy import linkage, fcluster
 from scipy.spatial.distance import pdist
+from sklearn.cluster import DBSCAN
 from sklearn.decomposition import TruncatedSVD
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
+from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from tqdm import tqdm
 from transformers import AutoTokenizer
@@ -33,14 +38,20 @@ def llm_tokenizer(text):
     return final_tokens
 
 
-def generate_bot_feature(series: Series, tokenizer=None, max_features=None, use_tfidf=True):
+def split_character(text: str):
+    if not isinstance(text, str):
+        text = str(text)
+
+    return list(text)
+
+
+def generate_pattern_feature(series: Series, tokenizer=llm_tokenizer, use_tfidf=True):
     """
     针对单列文本生成 Bag of Tokens 特征
 
     参数:
         series: pandas Series, 包含文本数据
         tokenizer: 分词函数, 默认None使用TfidfVectorizer默认分词器
-        max_features: int, 保留的最大特征数量
         use_tfidf: bool, 是否使用TF-IDF而非CountVectorizer
 
     返回:
@@ -58,13 +69,11 @@ def generate_bot_feature(series: Series, tokenizer=None, max_features=None, use_
     if use_tfidf:
         vectorizer = TfidfVectorizer(
             tokenizer=tokenizer,
-            max_features=max_features,
             token_pattern=None
         )
     else:
         vectorizer = CountVectorizer(
             tokenizer=tokenizer,
-            max_features=max_features,
             token_pattern=None
         )
 
@@ -75,7 +84,12 @@ def generate_bot_feature(series: Series, tokenizer=None, max_features=None, use_
     if feature_matrix.shape[1] > 500:
         feature_matrix = reduce_dimension(feature_matrix, 500)
 
-    feature_matrix = standard_scaler.fit_transform(feature_matrix)
+    # for i, row in enumerate(feature_matrix):
+    #     print(f"Row {i} features: {row[:10]}...")  # 只打印前10个特征
+    #     norm = np.linalg.norm(row)  # 计算当前行的 L2 范数
+    #     print(f"Row {i} norm: {norm:.4f}")  # 打印 L2 范数
+
+    # feature_matrix = standard_scaler.fit_transform(feature_matrix)
     # 构造完整输出，空值行补 NaN
     # full_matrix = np.full((len(series), feature_matrix.shape[1]), np.nan)
     # full_matrix[is_valid.values] = feature_matrix
@@ -135,19 +149,23 @@ def generate_fd_feature(dataframe: DataFrame, rhs_col: str):
 
         features.append(row_features)
 
-    # 转为 DataFrame
     feature_df = pd.DataFrame(features)
-    # print(features)
+    feature_df = feature_df / math.sqrt(len(dataframe.columns))  # 平均化特征值
+
+    # for i, row in enumerate(feature_df.values):
+    #     norm = np.linalg.norm(row)
+    #     print(f"Row {i} features: {row}")
+    #     print(f"Row {i} norm: {norm:.4f}")
 
     # 标准化
     scaler = MinMaxScaler()
     scaled = scaler.fit_transform(feature_df)
     scaled_df = pd.DataFrame(scaled, columns=feature_df.columns)
 
-    return scaled_df
+    return feature_df
 
 
-def reduce_dimension(feature_vector, n_components=None):
+def reduce_dimension(feature_vector: ndarray, n_components=None):
     """
     对 BoT 特征进行标准化和降维。
 
@@ -157,9 +175,10 @@ def reduce_dimension(feature_vector, n_components=None):
 
     返回:
         reduced_features: pd.DataFrame，降维后的特征
-        pca_model: PCA对象，可用于解释各主成分含义
     """
-    scaled_feature = standard_scaler.fit_transform(feature_vector)
+    # scaled_feature = standard_scaler.fit_transform(feature_vector)
+    scaled_feature = feature_vector
+
     if n_components is None:
         n_components = min(100, int(0.1 * feature_vector.shape[1]))
         # n_components = 500
@@ -171,6 +190,20 @@ def reduce_dimension(feature_vector, n_components=None):
     print(f"information retained by SVD: {explained:.4f}")
     print(f"original dimension: {feature_vector.shape[1]} -> reduced dimension: {reduced.shape[1]}")
     return reduced
+
+
+def generate_features(dataframe: DataFrame, target_column: str, tokenizer=None, use_tfidf=None):
+    kwargs = {}
+    if tokenizer is not None:
+        kwargs['tokenizer'] = tokenizer
+    if use_tfidf is not None:
+        kwargs['use_tfidf'] = use_tfidf
+
+    bot_feature = generate_pattern_feature(dataframe[target_column], **kwargs)
+    fd_feature = generate_fd_feature(dataframe, target_column)
+
+    feature_dataframe = pd.concat([bot_feature, fd_feature], axis=1)
+    return feature_dataframe
 
 
 def cluster_features(feature_dataframe: DataFrame, method="average", metric="cosine", max_clusters=20):
@@ -196,8 +229,8 @@ def cluster_features(feature_dataframe: DataFrame, method="average", metric="cos
     dist_matrix = pdist(feature_dataframe.values, metric=metric)
     linkage_matrix = linkage(dist_matrix, method=method)
 
-    clusters = fcluster(linkage_matrix, t=max_clusters, criterion='maxclust')
-    # clusters = fcluster(linkage_matrix, t=0.6, criterion='distance')
+    # clusters = fcluster(linkage_matrix, t=max_clusters, criterion='maxclust')
+    clusters = fcluster(linkage_matrix, t=0.3, criterion='distance')
     cluster_num = np.unique(clusters)[-1]
     print(f"Number of clusters formed: {cluster_num}")
 
@@ -224,32 +257,84 @@ def cluster_features(feature_dataframe: DataFrame, method="average", metric="cos
     return clusters, representatives
 
 
-def propagate_labels(labels: pd.Series, clusters, representatives):
+def detect_outliers(feature_vectors: ndarray, k=5):
+    print(k)
+    # 1. 选择 MinPts 值 (例如 4)
+    min_pts = k
+
+    # 2. 计算每个点到其第 MinPts 个最近邻居的距离
+    # n_neighbors 设置为 MinPts + 1 是因为 NearestNeighbors 会包含点本身
+    neigh = NearestNeighbors(n_neighbors=min_pts + 1)
+    neigh.fit(feature_vectors)
+    distances, indices = neigh.kneighbors(feature_vectors)
+    # 3. 获取到第 MinPts 个最近邻居的距离并排序
+    k_distances = np.sort(distances[:, min_pts], axis=0)
+
+    # 4. 使用 KneeLocator 找到肘点
+    # S=1.0 是敏感度参数，越小越敏感，越大越能找到更明显的肘点
+    # curve="convex" 和 direction="increasing" 适用于 K-距离图的形状
+    kneedle = KneeLocator(
+        x=range(len(k_distances)),
+        y=k_distances,
+        S=1.0,  # 推荐尝试不同的S值，例如0.5, 1.0, 1.5, 2.0
+        curve="convex",
+        direction="increasing"
+    )
+
+    # 获取肘点的索引和对应的 epsilon 值
+    elbow_index = kneedle.knee
+    elbow_epsilon = kneedle.elbow_y
+
+    print(f"自动计算的肘点索引 (在排序数组中): {elbow_index}")
+    print(f"建议的 epsilon 值: {elbow_epsilon:.4f}")
+
+    elbow_epsilon = min(0.3, elbow_epsilon)  # 限制 epsilon 的最大值为 0.3
+
+    dbscan = DBSCAN(eps=elbow_epsilon, min_samples=min_pts)
+    clusters = dbscan.fit_predict(feature_vectors)
+    n_clusters = len(set(clusters)) - (1 if -1 in clusters else 0)
+    print(f"\n使用建议的 epsilon={elbow_epsilon:.4f} 和 MinPts={min_pts}，DBSCAN 发现的簇数: {n_clusters}")
+    # print(f"聚类结果: {clusters}")
+    outliers = np.where(clusters == -1)[0]
+
+    return outliers
+
+
+def propagate_labels(clusters: ndarray, representatives: list, rep_labels: list | Series | ndarray):
     """
     Propagate labels based on clustering results.
 
-    :param labels: Series indicating true error labels
     :param clusters:
-    :param representatives: list of indices of representative samples for each cluster
+    :param representatives: list of indices of representative samples for each cluster in order of cluster IDs
+    :param rep_labels: error labels
     :return: DataFrame with propagated labels
     """
+    if len(representatives) != len(rep_labels):
+        raise ValueError("Length of representatives must match length of rep_labels.")
 
-    propagated_labels = np.zeros(len(labels), dtype=bool)
+    propagated_labels = np.zeros(len(clusters), dtype=bool)
 
-    for cluster_id, rep_idx in enumerate(representatives):
+    for idx, rep_idx in enumerate(representatives):
         if rep_idx == -1:
             continue
 
-        label = labels.iloc[rep_idx]
-        cluster_indices = np.where(clusters == cluster_id + 1)[0]
+        cluster_id = idx + 1
+
+        if isinstance(rep_labels, Series):
+            label = rep_labels.iloc[idx]
+        elif isinstance(rep_labels, ndarray) or isinstance(rep_labels, list):
+            label = rep_labels[idx]
+        else:
+            raise ValueError("rep_labels must be a Series, ndarray, or list.")
+
+        cluster_indices = np.where(clusters == cluster_id)
         propagated_labels[cluster_indices] = label
 
-    return Series(propagated_labels, index=labels.index)
-
+    return propagated_labels
 
 
 def cluster_and_propagate(dataframe: DataFrame, error_labels: DataFrame, method="average", metric="cosine",
-                          max_clusters=20, feature_params=None, parallel=False, verbose=False):
+                          max_clusters=20, parallel=False, verbose=False):
     """
     为数据集中的每一列聚类特征并传播标签。
 
@@ -274,48 +359,32 @@ def cluster_and_propagate(dataframe: DataFrame, error_labels: DataFrame, method=
     if not all(col in error_labels.columns for col in dataframe.columns):
         raise ValueError("Dataframe columns must match error labels columns")
 
-    # 默认特征参数
-    if feature_params is None:
-        feature_params = {
-            'bot': {'tokenizer': llm_tokenizer, 'use_tfidf': True},
-            'fd': {}
-        }
-
     pred_dataframe = DataFrame(np.zeros_like(error_labels, dtype=bool), columns=error_labels.columns)
 
     # 处理单个列的函数
     def process_column(column):
         if verbose:
-            print(f"Processing column: {column}")
-
-        col_series = dataframe[column]
-        missing_mask = col_series.isnull()
+            print(f"\nProcessing column: {column}")
 
         # 1. 生成特征
-        try:
-            non_missing_index = col_series[~missing_mask].index
-            missing_index = col_series[missing_mask].index
-            # bot_feature = generate_bot_feature(dataframe[column], **feature_params.get('bot', {}))
-            # fd_feature = generate_fd_feature(dataframe, column)
-            bot_feature = generate_bot_feature(col_series.loc[non_missing_index], **feature_params.get('bot', {}))
-            fd_feature = generate_fd_feature(dataframe.loc[non_missing_index], column)
+        feature_df = generate_features(dataframe, column)
 
-            feature_df = pd.concat([bot_feature, fd_feature], axis=1)
-        except Exception as e:
-            print(f"Error generating features for column {column}: {e}")
-            return column, Series([False] * len(dataframe), index=dataframe.index)
+        # outliers = detect_outliers(feature_df.values, k=feature_df.shape[1])
+        # print(outliers)
 
         # 2. 聚类并传播标签
         try:
             clusters, representatives = cluster_features(feature_df, method=method, metric=metric,
                                                          max_clusters=max_clusters)
-            true_error_mask = error_labels[column].astype(bool).loc[non_missing_index]
-            # true_error_mask = error_labels[column].astype(bool)
-            propagated_labels = propagate_labels(true_error_mask, clusters, representatives)
 
-            full_labels = Series(False, index=dataframe.index)
-            full_labels.loc[non_missing_index] = propagated_labels
-            full_labels.loc[missing_index] = True
+            true_error_mask = error_labels[column].astype(bool)
+            selected_labels = true_error_mask[representatives]
+            propagated_labels = propagate_labels(clusters, representatives, selected_labels)
+
+            # outlier_label = true_error_mask[outliers]
+            # print(outlier_label, outlier_label.sum(), len(outlier_label))
+
+            full_labels = propagated_labels
 
             if verbose:
                 error_count = true_error_mask.sum()
@@ -339,8 +408,5 @@ def cluster_and_propagate(dataframe: DataFrame, error_labels: DataFrame, method=
         for col in columns_iter:
             _, labels = process_column(col)
             pred_dataframe[col] = labels
-            # print(f"Contains {labels.isnull().sum()} null values in column {col}")
-            # print(f"length of column {col}: {len(labels)}, length of dataframe: {len(dataframe)}")
-    # total_nulls = pred_dataframe.isnull().sum().sum()
-    # print(f"Total null values in prediction dataframe: {total_nulls}")
+
     return pred_dataframe
