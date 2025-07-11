@@ -9,6 +9,7 @@ from numpy import ndarray
 from pandas import DataFrame, Series
 from scipy.cluster.hierarchy import linkage, fcluster
 from scipy.spatial.distance import pdist
+from sentence_transformers import SentenceTransformer
 from sklearn.cluster import DBSCAN
 from sklearn.decomposition import TruncatedSVD
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
@@ -18,7 +19,10 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 
 llama_tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-3B")
+embed_model = SentenceTransformer('all-MiniLM-L6-v2')
+
 standard_scaler = StandardScaler()
+minmax_scaler = MinMaxScaler()
 
 
 def llm_tokenizer(text):
@@ -45,7 +49,7 @@ def split_character(text: str):
     return list(text)
 
 
-def generate_pattern_feature(series: Series, tokenizer=llm_tokenizer, use_tfidf=True):
+def generate_pattern_feature(series: Series, tokenizer=llm_tokenizer, use_tfidf=True, max_features=1000):
     """
     针对单列文本生成 Bag of Tokens 特征
 
@@ -65,7 +69,17 @@ def generate_pattern_feature(series: Series, tokenizer=llm_tokenizer, use_tfidf=
 
     texts = series.fillna('').astype(str).tolist()
 
-    # 根据参数选择向量化器
+    if tokenizer:
+        token_counts = [len(tokenizer(text)) if tokenizer(text) else 0 for text in texts]
+    else:
+        token_counts = [len(text.split()) for text in texts]  # fallback 分词方式
+
+    char_lengths = [len(text) for text in texts]
+
+    token_counts_scaled = minmax_scaler.fit_transform(np.array(token_counts).reshape(-1, 1))
+    char_lengths_scaled = minmax_scaler.fit_transform(np.array(char_lengths).reshape(-1, 1))
+
+
     if use_tfidf:
         vectorizer = TfidfVectorizer(
             tokenizer=tokenizer,
@@ -77,27 +91,21 @@ def generate_pattern_feature(series: Series, tokenizer=llm_tokenizer, use_tfidf=
             token_pattern=None
         )
 
-    # 生成特征矩阵
     X = vectorizer.fit_transform(texts)
-    feature_matrix = X.toarray()
+    token_matrix = X.toarray()
 
-    if feature_matrix.shape[1] > 500:
-        feature_matrix = reduce_dimension(feature_matrix, 500)
+    if token_matrix.shape[1] > max_features:
+        token_matrix = reduce_dimension(token_matrix, max_features)
 
-    # for i, row in enumerate(feature_matrix):
-    #     print(f"Row {i} features: {row[:10]}...")  # 只打印前10个特征
-    #     norm = np.linalg.norm(row)  # 计算当前行的 L2 范数
-    #     print(f"Row {i} norm: {norm:.4f}")  # 打印 L2 范数
+    feature_matrix  = np.hstack([token_matrix, token_counts_scaled, char_lengths_scaled])
 
-    # feature_matrix = standard_scaler.fit_transform(feature_matrix)
-    # 构造完整输出，空值行补 NaN
-    # full_matrix = np.full((len(series), feature_matrix.shape[1]), np.nan)
-    # full_matrix[is_valid.values] = feature_matrix
+    n_token_feats = token_matrix.shape[1]
+    column_names = (
+            [f"token_{i}" for i in range(n_token_feats)] +
+            ["token_count_scaled", "char_length_scaled"]
+    )
 
-    # 命名列
-    feature_names = [f"tok_{tok}" for tok in vectorizer.get_feature_names_out()]
-    # return DataFrame(full_matrix, columns=feature_names)
-    return DataFrame(feature_matrix)
+    return DataFrame(feature_matrix, columns=column_names)
 
 
 def generate_fd_feature(dataframe: DataFrame, rhs_col: str):
@@ -107,7 +115,8 @@ def generate_fd_feature(dataframe: DataFrame, rhs_col: str):
     - conditional confidence（在该 LHS 值下该 RHS 值的频率）
     """
     if dataframe[rhs_col].isnull().any():
-        raise ValueError(f"Column '{rhs_col}' contains NaN values, which are not allowed for FD feature generation.")
+        print(f"Column '{rhs_col}' contains NaN values, which are not allowed for FD feature generation.")
+
     dataframe = dataframe.astype(str)
     lhs_cols = [col for col in dataframe.columns if col != rhs_col]
 
@@ -152,17 +161,41 @@ def generate_fd_feature(dataframe: DataFrame, rhs_col: str):
     feature_df = pd.DataFrame(features)
     feature_df = feature_df / math.sqrt(len(dataframe.columns))  # 平均化特征值
 
-    # for i, row in enumerate(feature_df.values):
-    #     norm = np.linalg.norm(row)
-    #     print(f"Row {i} features: {row}")
-    #     print(f"Row {i} norm: {norm:.4f}")
-
-    # 标准化
-    scaler = MinMaxScaler()
-    scaled = scaler.fit_transform(feature_df)
-    scaled_df = pd.DataFrame(scaled, columns=feature_df.columns)
-
     return feature_df
+
+
+def generate_semantic_features(
+    series: Series,
+    normalize: bool = True,
+    batch_size: int = 32
+) -> DataFrame:
+    """
+    为文本列生成语义向量（使用 SentenceTransformer）
+
+    参数:
+        series: pd.Series，包含文本数据
+        model_name: str，SentenceTransformer 模型名（如 all-MiniLM-L6-v2）
+        normalize: 是否对向量做单位归一化（即余弦距离可用）
+        batch_size: 批处理大小（适合大数据量）
+
+    返回:
+        pd.DataFrame：每行是原始文本的 embedding 向量
+    """
+    if series is None or series.empty:
+        return DataFrame()
+
+
+    # 填补缺失，转为字符串
+    texts = series.fillna("").astype(str).tolist()
+
+    # 编码为语义向量
+    embeddings = embed_model.encode(texts, batch_size=batch_size, normalize_embeddings=normalize)
+
+    # 转换为 DataFrame
+    dim = embeddings.shape[1]
+    column_names = [f"sem_{i}" for i in range(dim)]
+
+    return pd.DataFrame(embeddings, columns=column_names)
 
 
 def reduce_dimension(feature_vector: ndarray, n_components=None):
@@ -201,12 +234,17 @@ def generate_features(dataframe: DataFrame, target_column: str, tokenizer=None, 
 
     bot_feature = generate_pattern_feature(dataframe[target_column], **kwargs)
     fd_feature = generate_fd_feature(dataframe, target_column)
+    # embed_feature = generate_semantic_features(dataframe[target_column])
 
+    # feature_dataframe = pd.concat([bot_feature, fd_feature, embed_feature], axis=1)
     feature_dataframe = pd.concat([bot_feature, fd_feature], axis=1)
+    scaled_features = standard_scaler.fit_transform(feature_dataframe)
+    feature_dataframe = pd.DataFrame(scaled_features, columns=feature_dataframe.columns)
+
     return feature_dataframe
 
 
-def cluster_features(feature_dataframe: DataFrame, method="average", metric="cosine", max_clusters=20):
+def cluster_features(feature_dataframe: DataFrame, method="average", metric="cosine", cluster_params=None):
     """
     Cluster features using hierarchical clustering.
 
@@ -226,11 +264,17 @@ def cluster_features(feature_dataframe: DataFrame, method="average", metric="cos
     if metric == "cosine" and np.any(np.sum(feature_dataframe.values ** 2, axis=1) == 0):
         print("Warning: Some feature vectors are zero vectors, which may affect cosine distance calculations.")
 
+    if cluster_params is None:
+        raise ValueError("cluster_params must be provided with 't' and 'criterion' keys.")
+
+    print("Clustering parameters:", cluster_params)
     dist_matrix = pdist(feature_dataframe.values, metric=metric)
     linkage_matrix = linkage(dist_matrix, method=method)
 
-    # clusters = fcluster(linkage_matrix, t=max_clusters, criterion='maxclust')
-    clusters = fcluster(linkage_matrix, t=0.3, criterion='distance')
+    clusters = fcluster(linkage_matrix,
+                        t=cluster_params.get("t"),
+                        criterion=cluster_params.get("criterion"))
+
     cluster_num = np.unique(clusters)[-1]
     print(f"Number of clusters formed: {cluster_num}")
 
@@ -255,6 +299,28 @@ def cluster_features(feature_dataframe: DataFrame, method="average", metric="cos
         representatives.append(closest_point_idx)
 
     return clusters, representatives
+
+
+def check_clusters(series, labels, clusters, representatives: list):
+    for idx, rep_idx in enumerate(representatives):
+        if rep_idx == -1:
+            continue
+
+        cluster_id = idx + 1
+        cluster_indices = np.where(clusters == cluster_id)[0]
+
+        if len(cluster_indices) == 0:
+            print(f"Cluster {cluster_id} has no members.")
+            continue
+
+        print(f"Cluster {cluster_id} representative index: {rep_idx}, members: {len(cluster_indices)}")
+        print("Representative sample:", series.iloc[rep_idx])
+        print("Cluster members:")
+        members = series.iloc[cluster_indices]
+        unique_values = members.unique()
+        print(f"Unique values in cluster {cluster_id}: {unique_values}")
+        err_num = labels[cluster_indices].sum()
+        print(f"Number of errors in cluster {cluster_id}: {err_num}")
 
 
 def detect_outliers(feature_vectors: ndarray, k=5):
@@ -334,7 +400,7 @@ def propagate_labels(clusters: ndarray, representatives: list, rep_labels: list 
 
 
 def cluster_and_propagate(dataframe: DataFrame, error_labels: DataFrame, method="average", metric="cosine",
-                          max_clusters=20, parallel=False, verbose=False):
+                          cluster_params=None, parallel=False, verbose=False):
     """
     为数据集中的每一列聚类特征并传播标签。
 
@@ -362,30 +428,44 @@ def cluster_and_propagate(dataframe: DataFrame, error_labels: DataFrame, method=
     pred_dataframe = DataFrame(np.zeros_like(error_labels, dtype=bool), columns=error_labels.columns)
 
     # 处理单个列的函数
-    def process_column(column):
+    def process_column(column, col_cluster_params=None):
+        nonlocal cluster_params
+
         if verbose:
             print(f"\nProcessing column: {column}")
 
-        # 1. 生成特征
-        feature_df = generate_features(dataframe, column)
+        feature_df = generate_features(dataframe, column, use_tfidf=True)
+        unique_cnts = dataframe[column].nunique()
+        print(f"Unique values in column '{column}': {unique_cnts}")
 
-        # outliers = detect_outliers(feature_df.values, k=feature_df.shape[1])
-        # print(outliers)
-
-        # 2. 聚类并传播标签
-        try:
+        if col_cluster_params is None:
+            col_cluster_params = {
+                't': 0.4,
+                'criterion': 'distance',
+            }
             clusters, representatives = cluster_features(feature_df, method=method, metric=metric,
-                                                         max_clusters=max_clusters)
+                                                         cluster_params=col_cluster_params)
+            cluster_nums = len(np.unique(clusters))
+            max_clusters = min(int(unique_cnts), 500, cluster_nums)
+
+            col_cluster_params = {
+                't': max_clusters,
+                'criterion': 'maxclust',
+            }
+
+        try:
+
+            clusters, representatives = cluster_features(feature_df, method=method, metric=metric,
+                                                         cluster_params=col_cluster_params)
+
+            if column in ['city']:
+                check_clusters(dataframe[column], error_labels[column], clusters, representatives)
 
             true_error_mask = error_labels[column].astype(bool)
             selected_labels = true_error_mask[representatives]
             propagated_labels = propagate_labels(clusters, representatives, selected_labels)
 
-            # outlier_label = true_error_mask[outliers]
-            # print(outlier_label, outlier_label.sum(), len(outlier_label))
-
             full_labels = propagated_labels
-
             if verbose:
                 error_count = true_error_mask.sum()
                 pred_count = full_labels.sum()
@@ -406,7 +486,7 @@ def cluster_and_propagate(dataframe: DataFrame, error_labels: DataFrame, method=
     else:
         columns_iter = tqdm(dataframe.columns) if verbose else dataframe.columns
         for col in columns_iter:
-            _, labels = process_column(col)
+            _, labels = process_column(col, cluster_params)
             pred_dataframe[col] = labels
 
     return pred_dataframe
