@@ -4,6 +4,24 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 from typing import Dict, Any, Tuple
 
 
+def evaluate_column_predictions(true_labels, pred_labels):
+    """
+    Evaluate predictions against true labels and return metrics.
+
+    Parameters:
+        true_labels: DataFrame, ground truth error labels
+        pred_labels: DataFrame, predicted error labels
+    """
+    # real_labels = err_labels.iloc[samples][col].tolist()
+    result = {
+        'accuracy': accuracy_score(true_labels, pred_labels),
+        'precision': precision_score(true_labels, pred_labels, zero_division=0),
+        'recall': recall_score(true_labels, pred_labels, zero_division=0),
+        'f1': f1_score(true_labels, pred_labels, zero_division=0),
+    }
+    return result
+
+
 def evaluate_predictions(true_labels: pd.DataFrame, pred_labels: pd.DataFrame,
                          column_wise: bool = True, overall: bool = True) -> Dict[str, Any]:
     """
