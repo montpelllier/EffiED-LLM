@@ -10,7 +10,7 @@ from pandas import DataFrame, Series
 from scipy.cluster.hierarchy import linkage, fcluster
 from scipy.spatial.distance import pdist
 from sentence_transformers import SentenceTransformer
-from sklearn.cluster import DBSCAN
+from sklearn.cluster import DBSCAN, KMeans
 from sklearn.decomposition import TruncatedSVD
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.neighbors import NearestNeighbors
@@ -85,14 +85,25 @@ def generate_pattern_feature(series: Series, tokenizer=llm_tokenizer, use_tfidf=
             tokenizer=tokenizer,
             token_pattern=None
         )
+        # vectorizer = TfidfVectorizer(analyzer='char', ngram_range=(3, 3))
     else:
         vectorizer = CountVectorizer(
             tokenizer=tokenizer,
             token_pattern=None
         )
+    binned_matrix, bin_col_names = compute_token_bin_features(texts, tokenizer)
+
+    char_vectorizer = TfidfVectorizer(tokenizer=split_character, token_pattern=None)
+    X_char = char_vectorizer.fit_transform(texts)
 
     X = vectorizer.fit_transform(texts)
-    token_matrix = X.toarray()
+
+    # token_matrix = X.toarray()
+    # token_matrix = np.hstack([X_char.toarray()])
+    # token_matrix = np.hstack([binned_matrix])
+    # token_matrix = np.hstack([binned_matrix, X_char.toarray()])
+    token_matrix = np.hstack([binned_matrix, X.toarray(), X_char.toarray()])
+
 
     if token_matrix.shape[1] > max_features:
         token_matrix = reduce_dimension(token_matrix, max_features)
@@ -120,22 +131,22 @@ def generate_fd_feature(dataframe: DataFrame, rhs_col: str):
     dataframe = dataframe.astype(str)
     lhs_cols = [col for col in dataframe.columns if col != rhs_col]
 
-    # 全局 RHS 值计数
-    global_rhs_counter = Counter(dataframe[rhs_col])
-    total_rhs = len(dataframe)
+    total_rows = len(dataframe)
 
-    # 构建每列的 LHS → Counter(RHS)
-    fd_stats = {}
+    # 计算 LHS-RHS 组合的全局计数
+    lhs_rhs_counts = {}
+    lhs_counts = {}
     for lhs_col in lhs_cols:
-        grouped = defaultdict(list)
-        for _, row in dataframe.iterrows():
-            grouped[row[lhs_col]].append(row[rhs_col])
-        fd_stats[lhs_col] = {
-            lhs_val: Counter(rhs_vals)
-            for lhs_val, rhs_vals in grouped.items()
-        }
+        lhs_rhs_counts[lhs_col] = Counter()
+        lhs_counts[lhs_col] = Counter()
 
-    # 每行计算特征
+    for _, row in dataframe.iterrows():
+        rhs_val = row[rhs_col]
+        for lhs_col in lhs_cols:
+            lhs_val = row[lhs_col]
+            lhs_rhs_counts[lhs_col][(lhs_val, rhs_val)] += 1
+            lhs_counts[lhs_col][lhs_val] += 1
+
     features = []
     for _, row in dataframe.iterrows():
         row_features = {}
@@ -143,23 +154,20 @@ def generate_fd_feature(dataframe: DataFrame, rhs_col: str):
 
         for lhs_col in lhs_cols:
             lhs_val = row[lhs_col]
-            rhs_counter = fd_stats[lhs_col].get(lhs_val, Counter())
 
-            conditional_total = sum(rhs_counter.values())
-            conditional_count = rhs_counter.get(rhs_val, 0)
-            confidence = conditional_count / conditional_total if conditional_total else 0.0
+            combo_count = lhs_rhs_counts[lhs_col].get((lhs_val, rhs_val), 0)
+            lhs_count = lhs_counts[lhs_col].get(lhs_val, 0)
 
-            global_count = global_rhs_counter.get(rhs_val, 0)
-            support = global_count / total_rhs if total_rhs else 0.0
+            support = combo_count / total_rows if total_rows else 0.0
+            confidence = combo_count / lhs_count if lhs_count else 0.0
 
             row_features[f"{lhs_col}_support"] = support
             row_features[f"{lhs_col}_confidence"] = confidence
-            # row_features[f"{lhs_col}_quality"] = support * confidence
 
         features.append(row_features)
 
     feature_df = pd.DataFrame(features)
-    feature_df = feature_df / math.sqrt(len(dataframe.columns))  # 平均化特征值
+    feature_df = feature_df / (len(dataframe.columns) ** 0.5)  # 平均化特征值
 
     return feature_df
 
@@ -196,6 +204,71 @@ def generate_semantic_features(
     column_names = [f"sem_{i}" for i in range(dim)]
 
     return pd.DataFrame(embeddings, columns=column_names)
+
+
+def compute_token_bin_features(texts, tokenizer, bin_edges=None, normalize=True):
+    """
+    将表格列中的文本转换为基于 token 全列频率的分箱向量。
+    对纯数字 token 按字符拆分统计。
+    最后对每行向量进行正则化（行归一化）。
+
+    Args:
+        texts (List[str]): 文本数据列表
+        tokenizer: 分词函数
+        bin_edges (List[int], optional): 分箱右边界（不含），最后一箱为最大值以上
+        normalize (bool): 是否对每行特征向量进行归一化
+
+    Returns:
+        np.ndarray: binned_matrix [n_samples, n_bins]
+        List[str]: bin_col_names
+    """
+
+    if bin_edges is None:
+        bin_edges = [1, 2, 3, 5, 8, 15, 30, 50, 100, 200, 500]
+
+    if tokenizer:
+        tokenized = [tokenizer(text) if tokenizer(text) else [] for text in texts]
+    else:
+        tokenized = [text.split() for text in texts]
+
+    # 统计词频时数字token拆成字符
+    flat_tokens = []
+    for toks in tokenized:
+        for tok in toks:
+            if tok.isdigit():
+                flat_tokens.extend(list(tok))
+            else:
+                flat_tokens.append(tok)
+
+    token_tf = Counter(flat_tokens)
+
+    bin_labels = [f"≤{b}" for b in bin_edges] + [f">{bin_edges[-1]}"]
+    bin_index = {label: idx for idx, label in enumerate(bin_labels)}
+
+    def assign_bin(freq):
+        for b in bin_edges:
+            if freq <= b:
+                return f"≤{b}"
+        return f">{bin_edges[-1]}"
+
+    binned_matrix = np.zeros((len(texts), len(bin_labels)))
+
+    # 这里也拆数字token，保证统计一致性
+    for i, toks in enumerate(tokenized):
+        for tok in toks:
+            units = list(tok) if tok.isdigit() else [tok]
+            for unit in units:
+                tf = token_tf.get(unit, 0)
+                bin_label = assign_bin(tf)
+                binned_matrix[i, bin_index[bin_label]] += 1
+
+    # 行归一化，避免长度差异影响
+    if normalize:
+        row_sums = binned_matrix.sum(axis=1, keepdims=True)
+        row_sums[row_sums == 0] = 1  # 避免除以0
+        binned_matrix = binned_matrix / row_sums
+
+    return binned_matrix, [f"bin_tf_{label}" for label in bin_labels]
 
 
 def reduce_dimension(feature_vector: ndarray, n_components=None):
@@ -268,15 +341,18 @@ def cluster_features(feature_dataframe: DataFrame, method="average", metric="cos
         raise ValueError("cluster_params must be provided with 't' and 'criterion' keys.")
 
     print("Clustering parameters:", cluster_params)
-    dist_matrix = pdist(feature_dataframe.values, metric=metric)
-    linkage_matrix = linkage(dist_matrix, method=method)
+    kmeans = KMeans(n_clusters=cluster_params.get('n_clusters'), random_state=42)
+    clusters = kmeans.fit_predict(feature_dataframe.values)
 
-    clusters = fcluster(linkage_matrix,
-                        t=cluster_params.get("t"),
-                        criterion=cluster_params.get("criterion"))
+    # dist_matrix = pdist(feature_dataframe.values, metric=metric)
+    # linkage_matrix = linkage(dist_matrix, method=method)
+    #
+    # clusters = fcluster(linkage_matrix,
+    #                     t=cluster_params.get("t"),
+    #                     criterion=cluster_params.get("criterion"))
 
-    cluster_num = np.unique(clusters)[-1]
-    print(f"Number of clusters formed: {cluster_num}")
+    cluster_num = np.max(clusters)
+    print(f"Number of clusters formed: {cluster_num+1}")
 
     representatives = []
     for cluster_id in range(1, cluster_num + 1):
@@ -434,24 +510,22 @@ def cluster_and_propagate(dataframe: DataFrame, error_labels: DataFrame, method=
         if verbose:
             print(f"\nProcessing column: {column}")
 
-        feature_df = generate_features(dataframe, column, use_tfidf=True)
+        feature_df = generate_features(dataframe, column, tokenizer=split_character, use_tfidf=True)
         unique_cnts = dataframe[column].nunique()
         print(f"Unique values in column '{column}': {unique_cnts}")
 
         if col_cluster_params is None:
             col_cluster_params = {
-                't': 0.4,
-                'criterion': 'distance',
+                'n_clusters': 30,
             }
-            clusters, representatives = cluster_features(feature_df, method=method, metric=metric,
-                                                         cluster_params=col_cluster_params)
-            cluster_nums = len(np.unique(clusters))
-            max_clusters = min(int(unique_cnts), 500, cluster_nums)
-
-            col_cluster_params = {
-                't': max_clusters,
-                'criterion': 'maxclust',
-            }
+            # clusters, representatives = cluster_features(feature_df, method=method, metric=metric,
+            #                                              cluster_params=col_cluster_params)
+            # cluster_nums = len(np.unique(clusters))
+            # max_clusters = min(int(unique_cnts), 500, cluster_nums)
+            # col_cluster_params = {
+            #     't': max_clusters,
+            #     'criterion': 'maxclust',
+            # }
 
         try:
 
