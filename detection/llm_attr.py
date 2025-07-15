@@ -1,14 +1,15 @@
 import random
 
 import ollama
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 from detection.prompt_templates import *
-from detection.tmp_util import chunk_rows_by_length
-from evaluation.evaluation import evaluate_model, evaluate_column_predictions
-from features import *
 from model import *
 
-
+from evaluation.evaluation import evaluate_model, evaluate_predictions, evaluate_column_predictions
+from features import *
+from util import compute_nmi_matrix, get_top_nmi_relations
+from tmp_util import chunk_rows_by_length
 
 random.seed(42)
 
@@ -48,27 +49,34 @@ pred_df = DataFrame(np.zeros_like(data_error, dtype=bool), columns=data_error.co
 cluster_params = {
     'n_clusters': 30,
 }
-max_input_chars = 200
 
 cluster_df, repre_df = cluster_dataset(data_error, cluster_params=cluster_params)
 
+nmi_matrix = compute_nmi_matrix(data_error)
+related_col_dict = get_top_nmi_relations(nmi_matrix)
+
+max_input_chars = 400
+
 for col in data_error.columns:
     print("---" * 50)
-    unique_cnts = data_error[col].nunique()
-    print(f"Unique values in column '{col}': {unique_cnts}")
+    related_cols = related_col_dict[col]
+    print(f"Processing column: {col} with related columns: {related_cols}")
 
     col_cluster = cluster_df[col]
     col_repre = repre_df[col].astype(int).tolist()
 
-    sample_data = data_error.iloc[col_repre]
-    sample_val_lst = sample_data[col].tolist()
+    unique_cnts = data_error[col].nunique()
+    print(f"Unique values in column '{col}': {unique_cnts}")
 
-    rows = [{"index": int(idx), col: val} for idx, val in zip(col_repre, sample_val_lst)]
+    samples = col_repre
 
-#     sys_prompt = """
-# You are an expert error detection assistant. Your core task is to meticulously examine individual values within a dataset and determine if they contain any errors.
-# An error is broadly defined and includes, but is not limited to, typos, grammatical mistakes, formatting inconsistencies (e.g., incorrect date formats, unexpected characters), or logical inconsistencies when compared to other related data points within the same record or common knowledge.
-# """
+    sample_data = data_error.iloc[samples]
+    sample_values = sample_data[related_cols + [col]].to_dict(orient='records')
+    for i, idx in enumerate(samples):
+        sample_values[i]['index'] = int(idx)
+
+    rows = sample_values
+    # print(rows)
     sys_prompt = """
 You are an error detection assistant. Your job is to label whether each value contains an error.
 An error could be a typo or a formatting issue.
@@ -90,13 +98,11 @@ Respond ONLY in valid JSON.
 
     processed_row_num = 0
     for chunk in chunk_rows_by_length(rows, max_chars=max_input_chars):
-
         chunk_json = "[\n" + ",\n".join(chunk) + "\n]"
         processed_row_num += len(chunk)
         print(f"Processing chunk {chunk_idx}: {processed_row_num} / {len(rows)} rows")
         chunk_idx += 1
 
-        # print(chunk_json)
         messages.append({"role": "user", "content": gen_err_prompt(col, chunk_json)})
 
         response = ollama.chat(
@@ -109,12 +115,11 @@ Respond ONLY in valid JSON.
 
         json_str = extract_label_list_json(response.content)
         parsed = LabelList.model_validate_json(json_str)
-        # print(parsed)
 
         messages.append({"role": "assistant", "content": json_str})
 
         for label in parsed.labels:
-            if label.index not in col_repre:
+            if label.index not in samples:
                 print(f"⚠️ Index {label.index} not found in samples for column '{col}'")
                 continue
 
@@ -123,7 +128,7 @@ Respond ONLY in valid JSON.
         if len(chunk) != len(parsed.labels):
             print(f"Warning: Chunk {chunk_idx} processed {len(parsed.labels)} labels, but expected {len(chunk)} rows.")
 
-    for idx in col_repre:
+    for idx in samples:
         if idx not in result_dict:
             print(f"⚠️ No label found for index {idx} — default to False")
             sample_labels.append(False)
@@ -159,26 +164,27 @@ Input:
             retry_parsed = LabelList.model_validate_json(json_str)
 
             for label in retry_parsed.labels:
-                if label.index not in col_repre:
+                if label.index not in samples:
                     print(f"⚠️ Retry index {label.index} not found in samples for column '{col}'")
                     continue
 
                 result_dict[label.index] = label.is_error
                 missing_indices.discard(label.index)
 
-    real_labels = err_labels.iloc[col_repre][col].tolist()
+
+    real_labels = err_labels.iloc[samples][col].tolist()
     result = evaluate_column_predictions(real_labels, sample_labels)
     print(f"LLM prediction results for column '{col}': {result}")
 
-    for idx, label in zip(col_repre, sample_labels):
+    for idx, label in zip(samples, sample_labels):
         real_label = err_labels.iloc[idx][col]
         if label == real_label:
             continue
         print(f"predicted label *{label}* does not match actual label *{real_label}* for index {idx}")
-        data = data_error.loc[idx, col]
+        data = data_error.loc[idx, related_cols + [col]].to_dict()
         print(data)
 
-    prediction = propagate_labels(col_cluster, col_repre, sample_labels)
+    prediction = propagate_labels(col_cluster, samples, sample_labels)
     pred_df[col] = prediction
 
 evaluate_model(err_labels, pred_df)
