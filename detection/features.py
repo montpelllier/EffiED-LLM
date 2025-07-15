@@ -7,10 +7,10 @@ import pandas as pd
 from kneed import KneeLocator
 from numpy import ndarray
 from pandas import DataFrame, Series
-from scipy.cluster.hierarchy import linkage, fcluster
+from scipy.cluster.hierarchy import linkage, fcluster, centroid
 from scipy.spatial.distance import pdist
 from sentence_transformers import SentenceTransformer
-from sklearn.cluster import DBSCAN, KMeans
+from sklearn.cluster import DBSCAN, KMeans, MiniBatchKMeans
 from sklearn.decomposition import TruncatedSVD
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.neighbors import NearestNeighbors
@@ -49,7 +49,7 @@ def split_character(text: str):
     return list(text)
 
 
-def generate_pattern_feature(series: Series, tokenizer=llm_tokenizer, use_tfidf=True, max_features=1000):
+def generate_pattern_feature(series: Series, tokenizer=llm_tokenizer, use_tfidf=True, max_features=500):
     """
     针对单列文本生成 Bag of Tokens 特征
 
@@ -70,6 +70,7 @@ def generate_pattern_feature(series: Series, tokenizer=llm_tokenizer, use_tfidf=
     texts = series.fillna('').astype(str).tolist()
 
     if tokenizer:
+        # print("using tokenizer:", tokenizer.__name__)
         token_counts = [len(tokenizer(text)) if tokenizer(text) else 0 for text in texts]
     else:
         token_counts = [len(text.split()) for text in texts]  # fallback 分词方式
@@ -94,27 +95,35 @@ def generate_pattern_feature(series: Series, tokenizer=llm_tokenizer, use_tfidf=
     binned_matrix, bin_col_names = compute_token_bin_features(texts, tokenizer)
 
     char_vectorizer = TfidfVectorizer(tokenizer=split_character, token_pattern=None)
+
     X_char = char_vectorizer.fit_transform(texts)
+    X_token = vectorizer.fit_transform(texts)
 
-    X = vectorizer.fit_transform(texts)
+    if X_token.shape[1] > max_features:
+        token_matrix = reduce_dimension(X_token, max_features)
+    else:
+        token_matrix = X_token.toarray()
 
+    for i in range(len(token_matrix)):
+        token_matrix[i] = token_matrix[i] / token_counts[i] if token_counts[i] > 0 else token_matrix[i]
+
+    # print(token_matrix.shape, X_char.shape, binned_matrix.shape, token_counts_scaled.shape, char_lengths_scaled.shape)
     # token_matrix = X.toarray()
     # token_matrix = np.hstack([X_char.toarray()])
     # token_matrix = np.hstack([binned_matrix])
     # token_matrix = np.hstack([binned_matrix, X_char.toarray()])
-    token_matrix = np.hstack([binned_matrix, X.toarray(), X_char.toarray()])
+    feature_matrix = np.hstack([
+        binned_matrix,
+        # token_matrix,
+        X_char.toarray(),
+        token_counts_scaled,
+        char_lengths_scaled
+    ])
 
+    # feature_matrix = np.hstack([token_matrix, token_counts_scaled, char_lengths_scaled])
 
-    if token_matrix.shape[1] > max_features:
-        token_matrix = reduce_dimension(token_matrix, max_features)
-
-    feature_matrix  = np.hstack([token_matrix, token_counts_scaled, char_lengths_scaled])
-
-    n_token_feats = token_matrix.shape[1]
-    column_names = (
-            [f"token_{i}" for i in range(n_token_feats)] +
-            ["token_count_scaled", "char_length_scaled"]
-    )
+    n_feats = feature_matrix.shape[1]
+    column_names = ([f"feat_{i}" for i in range(n_feats)])
 
     return DataFrame(feature_matrix, columns=column_names)
 
@@ -129,7 +138,8 @@ def generate_fd_feature(dataframe: DataFrame, rhs_col: str):
         print(f"Column '{rhs_col}' contains NaN values, which are not allowed for FD feature generation.")
 
     dataframe = dataframe.astype(str)
-    lhs_cols = [col for col in dataframe.columns if col != rhs_col]
+    # lhs_cols = [col for col in dataframe.columns if col != rhs_col]
+    lhs_cols =dataframe.columns
 
     total_rows = len(dataframe)
 
@@ -224,13 +234,12 @@ def compute_token_bin_features(texts, tokenizer, bin_edges=None, normalize=True)
     """
 
     if bin_edges is None:
-        bin_edges = [1, 2, 3, 5, 8, 15, 30, 50, 100, 200, 500]
+        bin_edges = [1, 2, 3, 4, 5, 7, 9, 12, 15, 20, 25, 35, 50, 75, 100, 150, 200, 300, 500, 1000, 2000, 5000, 10000]
 
     if tokenizer:
         tokenized = [tokenizer(text) if tokenizer(text) else [] for text in texts]
     else:
         tokenized = [text.split() for text in texts]
-
     # 统计词频时数字token拆成字符
     flat_tokens = []
     for toks in tokenized:
@@ -317,7 +326,7 @@ def generate_features(dataframe: DataFrame, target_column: str, tokenizer=None, 
     return feature_dataframe
 
 
-def cluster_features(feature_dataframe: DataFrame, method="average", metric="cosine", cluster_params=None):
+def cluster_features(feature_dataframe: DataFrame, cluster_params=None, verbose=False):
     """
     Cluster features using hierarchical clustering.
 
@@ -334,47 +343,46 @@ def cluster_features(feature_dataframe: DataFrame, method="average", metric="cos
     if feature_dataframe.empty:
         raise ValueError("Empty feature dataframe provided for clustering.")
 
-    if metric == "cosine" and np.any(np.sum(feature_dataframe.values ** 2, axis=1) == 0):
-        print("Warning: Some feature vectors are zero vectors, which may affect cosine distance calculations.")
-
     if cluster_params is None:
         raise ValueError("cluster_params must be provided with 't' and 'criterion' keys.")
 
-    print("Clustering parameters:", cluster_params)
-    kmeans = KMeans(n_clusters=cluster_params.get('n_clusters'), random_state=42)
-    clusters = kmeans.fit_predict(feature_dataframe.values)
+    k = cluster_params.get('n_clusters')
+    if verbose:
+        print("Clustering parameters:", cluster_params)
 
-    # dist_matrix = pdist(feature_dataframe.values, metric=metric)
-    # linkage_matrix = linkage(dist_matrix, method=method)
-    #
-    # clusters = fcluster(linkage_matrix,
-    #                     t=cluster_params.get("t"),
-    #                     criterion=cluster_params.get("criterion"))
+    # kmeans = KMeans(n_clusters=k, random_state=42)
+    # kmeans.fit_predict(feature_dataframe.values)
+    # labels = kmeans.labels_
+    # centroids = kmeans.cluster_centers_
 
-    cluster_num = np.max(clusters)
-    print(f"Number of clusters formed: {cluster_num+1}")
+    mb_kmeans = MiniBatchKMeans(n_clusters=k, n_init=3, batch_size=256, max_iter=100, random_state=42)
+    mb_kmeans.fit_predict(feature_dataframe.values)
+    labels = mb_kmeans.labels_
+    centroids = mb_kmeans.cluster_centers_
+
+    cluster_num = np.max(labels) + 1
+    if verbose:
+        print(f"Number of clusters formed: {cluster_num}")
 
     representatives = []
-    for cluster_id in range(1, cluster_num + 1):
-        indices = np.where(clusters == cluster_id)[0]
+    for cluster_id in range(cluster_num):
+        cluster_indices = np.where(labels == cluster_id)[0]
+        cluster_points = feature_dataframe.iloc[cluster_indices]
 
-        if len(indices) == 0:
+        if len(cluster_indices) == 0:
             representatives.append(-1)
+            print(f"Warning: Cluster {cluster_id} has no members.")
             continue
-        elif len(indices) == 1:
-            representatives.append(indices[0])
+        elif len(cluster_indices) == 1:
+            representatives.append(cluster_indices[0])
+            # print(f"Cluster {cluster_id} has only one member, using it as representative.")
             continue
 
-        centroid = np.mean(feature_dataframe.iloc[indices].values, axis=0)
-
-        distances = np.array([
-            np.linalg.norm(feature_dataframe.iloc[idx].values - centroid)
-            for idx in indices
-        ])
-        closest_point_idx = indices[np.argmin(distances)]
-        representatives.append(closest_point_idx)
-
-    return clusters, representatives
+        distances = np.linalg.norm(cluster_points - centroids[cluster_id], axis=1)
+        closest_idx_in_cluster = np.argmin(distances)
+        representatives.append(cluster_indices[closest_idx_in_cluster])
+    # print(representatives)
+    return labels, representatives
 
 
 def check_clusters(series, labels, clusters, representatives: list):
@@ -454,13 +462,16 @@ def propagate_labels(clusters: ndarray, representatives: list, rep_labels: list 
     if len(representatives) != len(rep_labels):
         raise ValueError("Length of representatives must match length of rep_labels.")
 
+    if len(representatives) != np.max(clusters) + 1:
+        raise ValueError("Length of representatives must match number of clusters.")
+
+    # print(f"Number of clusters: {np.max(clusters) + 1}, Number of representatives: {len(representatives)}, Number of labels: {len(rep_labels)}")
+
     propagated_labels = np.zeros(len(clusters), dtype=bool)
 
     for idx, rep_idx in enumerate(representatives):
         if rep_idx == -1:
             continue
-
-        cluster_id = idx + 1
 
         if isinstance(rep_labels, Series):
             label = rep_labels.iloc[idx]
@@ -469,14 +480,13 @@ def propagate_labels(clusters: ndarray, representatives: list, rep_labels: list 
         else:
             raise ValueError("rep_labels must be a Series, ndarray, or list.")
 
-        cluster_indices = np.where(clusters == cluster_id)
+        cluster_indices = np.where(clusters == idx)
         propagated_labels[cluster_indices] = label
 
     return propagated_labels
 
 
-def cluster_and_propagate(dataframe: DataFrame, error_labels: DataFrame, method="average", metric="cosine",
-                          cluster_params=None, parallel=False, verbose=False):
+def cluster_and_propagate(dataframe: DataFrame, error_labels: DataFrame, cluster_params=None, parallel=False, verbose=False):
     """
     为数据集中的每一列聚类特征并传播标签。
 
@@ -510,7 +520,7 @@ def cluster_and_propagate(dataframe: DataFrame, error_labels: DataFrame, method=
         if verbose:
             print(f"\nProcessing column: {column}")
 
-        feature_df = generate_features(dataframe, column, tokenizer=split_character, use_tfidf=True)
+        feature_df = generate_features(dataframe, column, tokenizer=llm_tokenizer, use_tfidf=True)
         unique_cnts = dataframe[column].nunique()
         print(f"Unique values in column '{column}': {unique_cnts}")
 
@@ -518,22 +528,13 @@ def cluster_and_propagate(dataframe: DataFrame, error_labels: DataFrame, method=
             col_cluster_params = {
                 'n_clusters': 30,
             }
-            # clusters, representatives = cluster_features(feature_df, method=method, metric=metric,
-            #                                              cluster_params=col_cluster_params)
-            # cluster_nums = len(np.unique(clusters))
-            # max_clusters = min(int(unique_cnts), 500, cluster_nums)
-            # col_cluster_params = {
-            #     't': max_clusters,
-            #     'criterion': 'maxclust',
-            # }
 
         try:
 
-            clusters, representatives = cluster_features(feature_df, method=method, metric=metric,
-                                                         cluster_params=col_cluster_params)
+            clusters, representatives = cluster_features(feature_df, cluster_params=col_cluster_params)
 
-            if column in ['city']:
-                check_clusters(dataframe[column], error_labels[column], clusters, representatives)
+            # if column in ['city']:
+            #     check_clusters(dataframe[column], error_labels[column], clusters, representatives)
 
             true_error_mask = error_labels[column].astype(bool)
             selected_labels = true_error_mask[representatives]
@@ -562,5 +563,90 @@ def cluster_and_propagate(dataframe: DataFrame, error_labels: DataFrame, method=
         for col in columns_iter:
             _, labels = process_column(col, cluster_params)
             pred_dataframe[col] = labels
+
+    return pred_dataframe
+
+
+def cluster_dataset(dataframe: DataFrame, cluster_params=None, verbose=False):
+    """
+    为整个数据集生成特征，进行聚类并传播标签
+
+    参数:
+        dataframe: DataFrame，包含需要处理的数据
+        error_labels: DataFrame，包含真实错误标签
+        cluster_params: dict，聚类参数
+        verbose: bool，是否输出详细信息
+
+    返回:
+        tuple: (预测标签DataFrame, 特征DataFrame, 代表点DataFrame)
+    """
+    if dataframe.empty:
+        raise ValueError("空的数据框或错误标签")
+
+    # 初始化结果
+    # pred_dataframe = DataFrame(np.zeros_like(error_labels, dtype=bool), columns=error_labels.columns)
+    all_features = {}
+    all_representatives = {}
+    all_clusters = {}
+
+    # 处理每一列
+    for column in dataframe.columns:
+        if verbose:
+            print(f"\nProcessing column: {column}")
+
+        # 生成特征
+        feature_df = generate_features(dataframe, column, tokenizer=llm_tokenizer, use_tfidf=True)
+        all_features[column] = feature_df
+
+        # 聚类
+        col_cluster_params = cluster_params or {'n_clusters': 30}
+
+        clusters, representatives = cluster_features(feature_df, cluster_params=col_cluster_params)
+        all_representatives[column] = representatives
+        all_clusters[column] = clusters
+
+    cluster_df = pd.DataFrame(all_clusters, index=dataframe.index, columns=dataframe.columns)
+    repre_df = pd.DataFrame(all_representatives, columns=dataframe.columns)
+
+    return cluster_df, repre_df
+
+
+def propagate_labels_from_clusters(
+    cluster_dataframe: DataFrame,
+    representatives_dataframe: DataFrame,
+    error_labels: DataFrame,
+    verbose=False
+):
+    """
+    从聚类结果中传播标签。
+
+    参数:
+        feature_dataframe: DataFrame，特征矩阵
+        cluster_dataframe: DataFrame，聚类结果
+        representatives_dataframe: DataFrame，代表点索引
+        error_labels: DataFrame，真实错误标签
+        verbose: bool，是否输出详细信息
+
+    返回:
+        DataFrame: 每列传播后的预测标签
+    """
+    if cluster_dataframe.empty or representatives_dataframe.empty:
+        raise ValueError("Empty cluster or representatives dataframe provided")
+
+    pred_dataframe = DataFrame(np.zeros_like(error_labels, dtype=bool), columns=error_labels.columns)
+
+    for column in cluster_dataframe.columns:
+        if verbose:
+            print(f"\nProcessing column: {column}")
+
+        clusters = cluster_dataframe[column].values
+        representatives = representatives_dataframe[column].values
+
+        true_error_mask = error_labels[column].astype(bool)
+        selected_labels = true_error_mask[representatives]
+
+        propagated_labels = propagate_labels(clusters, representatives, selected_labels)
+
+        pred_dataframe[column] = propagated_labels
 
     return pred_dataframe
