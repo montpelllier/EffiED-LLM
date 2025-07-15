@@ -17,39 +17,22 @@ Input:
 """
     return prompt
 
-def gen_fd_prompt(column_name, data_json):
+
+def gen_attr_prompt(column_name, data_json):
     """
     创建用于检测拼写错误的提示模板
     """
     prompt = f"""
-You are given a list of data row extracted from a dataset. The target column is named `{column_name}`.
-Label each value of the target column as either an error or not an error.
+You are given a list of data row extracted from a dataset, where the target column named `{column_name}`. 
+Label each value from the target column as either an error or not an error.
 
-- Each row has an "index" field, which is the original index from the dataset.
-- **DO NOT** use your own internal numbering (e.g., 0, 1, 2, etc.). Use **only the "index" values provided**.
-
-Input:
-{data_json}
-"""
-    return prompt
-
-def gen_anno_prompt(column_name, data_json, column_annoations):
-    """
-    创建用于检测拼写错误的提示模板
-    """
-    prompt = f"""
-You are given a list of values extracted from a dataset column named `{column_name}`.
-Label each value of the given column as either an error or not an error. An error could be a typo, a formatting issue, or any other kind of data quality problem.
-Use column description help you determine if the value is an error. 
-
-- Each row has an "index" field, which is the original index from the dataset.
-- **Never** use your own internal numbering (e.g., 0, 1, 2, etc.). Use **only the "index" values provided**.
-
-Column annotations:
-{column_annoations}
+- Each value has an "index" field, which is the original index from the dataset.
+- Do **not** use your own internal numbering (e.g., 0, 1, 2, etc.). Use **only the "index" values provided**.
+- Only label the values in the target column, do not label other columns.
+- Only label the values that you are confident about, do not label the values that you are not sure about.
 
 Input:
-{data_json}
+For value in the row index {data_json}
 """
     return prompt
 
