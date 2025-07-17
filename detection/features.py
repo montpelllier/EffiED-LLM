@@ -1,16 +1,13 @@
 import concurrent.futures
-import math
-from collections import Counter, defaultdict
+from collections import Counter
 
 import numpy as np
 import pandas as pd
 from kneed import KneeLocator
 from numpy import ndarray
 from pandas import DataFrame, Series
-from scipy.cluster.hierarchy import linkage, fcluster, centroid
-from scipy.spatial.distance import pdist
 from sentence_transformers import SentenceTransformer
-from sklearn.cluster import DBSCAN, KMeans, MiniBatchKMeans
+from sklearn.cluster import DBSCAN, MiniBatchKMeans
 from sklearn.decomposition import TruncatedSVD
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.neighbors import NearestNeighbors
@@ -25,7 +22,7 @@ standard_scaler = StandardScaler()
 minmax_scaler = MinMaxScaler()
 
 
-def llm_tokenizer(text):
+def llm_tokenizer(text: str) -> list[str]:
     """
     Use Llama tokenizer to tokenize the input text.
     :param text: input text to tokenize
@@ -42,7 +39,12 @@ def llm_tokenizer(text):
     return final_tokens
 
 
-def split_character(text: str):
+def split_character(text: str) -> list[str]:
+    """
+    Split the input text into individual characters.
+    :param text:
+    :return:
+    """
     if not isinstance(text, str):
         text = str(text)
 
@@ -51,15 +53,7 @@ def split_character(text: str):
 
 def generate_pattern_feature(series: Series, tokenizer=llm_tokenizer, use_tfidf=True, max_features=500):
     """
-    针对单列文本生成 Bag of Tokens 特征
-
-    参数:
-        series: pandas Series, 包含文本数据
-        tokenizer: 分词函数, 默认None使用TfidfVectorizer默认分词器
-        use_tfidf: bool, 是否使用TF-IDF而非CountVectorizer
-
-    返回:
-        pd.DataFrame: 特征矩阵
+    Generate pattern features for a given text series. It computes token counts, character lengths, character-based TF-IDF, token binning, and normalizes the features.
     """
     if series is None or series.empty:
         return DataFrame()
@@ -80,13 +74,11 @@ def generate_pattern_feature(series: Series, tokenizer=llm_tokenizer, use_tfidf=
     token_counts_scaled = minmax_scaler.fit_transform(np.array(token_counts).reshape(-1, 1))
     char_lengths_scaled = minmax_scaler.fit_transform(np.array(char_lengths).reshape(-1, 1))
 
-
     if use_tfidf:
         vectorizer = TfidfVectorizer(
             tokenizer=tokenizer,
             token_pattern=None
         )
-        # vectorizer = TfidfVectorizer(analyzer='char', ngram_range=(3, 3))
     else:
         vectorizer = CountVectorizer(
             tokenizer=tokenizer,
@@ -120,8 +112,6 @@ def generate_pattern_feature(series: Series, tokenizer=llm_tokenizer, use_tfidf=
         char_lengths_scaled
     ])
 
-    # feature_matrix = np.hstack([token_matrix, token_counts_scaled, char_lengths_scaled])
-
     n_feats = feature_matrix.shape[1]
     column_names = ([f"feat_{i}" for i in range(n_feats)])
 
@@ -130,16 +120,13 @@ def generate_pattern_feature(series: Series, tokenizer=llm_tokenizer, use_tfidf=
 
 def generate_fd_feature(dataframe: DataFrame, rhs_col: str):
     """
-    构建 FD 特征向量，每行包含来自每个 LHS 对 RHS 的：
-    - global support（该 RHS 值在所有 LHS 值中出现的频率）
-    - conditional confidence（在该 LHS 值下该 RHS 值的频率）
+    Generate functional dependency features for a DataFrame.
     """
     if dataframe[rhs_col].isnull().any():
         print(f"Column '{rhs_col}' contains NaN values, which are not allowed for FD feature generation.")
 
     dataframe = dataframe.astype(str)
-    # lhs_cols = [col for col in dataframe.columns if col != rhs_col]
-    lhs_cols =dataframe.columns
+    lhs_cols = dataframe.columns
 
     total_rows = len(dataframe)
 
@@ -183,9 +170,9 @@ def generate_fd_feature(dataframe: DataFrame, rhs_col: str):
 
 
 def generate_semantic_features(
-    series: Series,
-    normalize: bool = True,
-    batch_size: int = 32
+        series: Series,
+        normalize: bool = True,
+        batch_size: int = 32
 ) -> DataFrame:
     """
     为文本列生成语义向量（使用 SentenceTransformer）
@@ -202,7 +189,6 @@ def generate_semantic_features(
     if series is None or series.empty:
         return DataFrame()
 
-
     # 填补缺失，转为字符串
     texts = series.fillna("").astype(str).tolist()
 
@@ -218,19 +204,7 @@ def generate_semantic_features(
 
 def compute_token_bin_features(texts, tokenizer, bin_edges=None, normalize=True):
     """
-    将表格列中的文本转换为基于 token 全列频率的分箱向量。
-    对纯数字 token 按字符拆分统计。
-    最后对每行向量进行正则化（行归一化）。
-
-    Args:
-        texts (List[str]): 文本数据列表
-        tokenizer: 分词函数
-        bin_edges (List[int], optional): 分箱右边界（不含），最后一箱为最大值以上
-        normalize (bool): 是否对每行特征向量进行归一化
-
-    Returns:
-        np.ndarray: binned_matrix [n_samples, n_bins]
-        List[str]: bin_col_names
+    Calculate token binning features for a list of texts.
     """
 
     if bin_edges is None:
@@ -262,7 +236,7 @@ def compute_token_bin_features(texts, tokenizer, bin_edges=None, normalize=True)
 
     binned_matrix = np.zeros((len(texts), len(bin_labels)))
 
-    # 这里也拆数字token，保证统计一致性
+    # split token into characters if it is a digit
     for i, toks in enumerate(tokenized):
         for tok in toks:
             units = list(tok) if tok.isdigit() else [tok]
@@ -271,7 +245,7 @@ def compute_token_bin_features(texts, tokenizer, bin_edges=None, normalize=True)
                 bin_label = assign_bin(tf)
                 binned_matrix[i, bin_index[bin_label]] += 1
 
-    # 行归一化，避免长度差异影响
+    # row normalization
     if normalize:
         row_sums = binned_matrix.sum(axis=1, keepdims=True)
         row_sums[row_sums == 0] = 1  # 避免除以0
@@ -282,14 +256,7 @@ def compute_token_bin_features(texts, tokenizer, bin_edges=None, normalize=True)
 
 def reduce_dimension(feature_vector: ndarray, n_components=None):
     """
-    对 BoT 特征进行标准化和降维。
-
-    参数:
-        feature_df: pd.DataFrame，BoT特征（每行一个样本）
-        variance_threshold: float，PCA保留的累计解释方差比例
-
-    返回:
-        reduced_features: pd.DataFrame，降维后的特征
+    Reduce the dimensionality of the feature vector using Truncated SVD.
     """
     # scaled_feature = standard_scaler.fit_transform(feature_vector)
     scaled_feature = feature_vector
@@ -308,6 +275,7 @@ def reduce_dimension(feature_vector: ndarray, n_components=None):
 
 
 def generate_features(dataframe: DataFrame, target_column: str, tokenizer=None, use_tfidf=None):
+    """ Generate features for a given DataFrame and target column."""
     kwargs = {}
     if tokenizer is not None:
         kwargs['tokenizer'] = tokenizer
@@ -385,7 +353,7 @@ def cluster_features(feature_dataframe: DataFrame, cluster_params=None, verbose=
     return labels, representatives
 
 
-def check_clusters(series, labels, clusters, representatives: list):
+def check_clusters(series: Series, labels, clusters, representatives: list):
     for idx, rep_idx in enumerate(representatives):
         if rep_idx == -1:
             continue
@@ -450,7 +418,7 @@ def detect_outliers(feature_vectors: ndarray, k=5):
     return outliers
 
 
-def propagate_labels(clusters: ndarray, representatives: list, rep_labels: list | Series | ndarray):
+def propagate_labels(clusters: ndarray, representatives: list | ndarray, rep_labels: list | Series | ndarray):
     """
     Propagate labels based on clustering results.
 
@@ -486,7 +454,8 @@ def propagate_labels(clusters: ndarray, representatives: list, rep_labels: list 
     return propagated_labels
 
 
-def cluster_and_propagate(dataframe: DataFrame, error_labels: DataFrame, cluster_params=None, parallel=False, verbose=False):
+def cluster_and_propagate(dataframe: DataFrame, error_labels: DataFrame, cluster_params=None, parallel=False,
+                          verbose=False):
     """
     为数据集中的每一列聚类特征并传播标签。
 
@@ -569,27 +538,19 @@ def cluster_and_propagate(dataframe: DataFrame, error_labels: DataFrame, cluster
 
 def cluster_dataset(dataframe: DataFrame, cluster_params=None, verbose=False):
     """
-    为整个数据集生成特征，进行聚类并传播标签
-
-    参数:
-        dataframe: DataFrame，包含需要处理的数据
-        error_labels: DataFrame，包含真实错误标签
-        cluster_params: dict，聚类参数
-        verbose: bool，是否输出详细信息
-
-    返回:
-        tuple: (预测标签DataFrame, 特征DataFrame, 代表点DataFrame)
+    Cluster the dataset and generate features for each column.
+    :param dataframe:
+    :param cluster_params:
+    :param verbose:
+    :return:
     """
     if dataframe.empty:
-        raise ValueError("空的数据框或错误标签")
+        raise ValueError("Empty dataframe provided for clustering.")
 
-    # 初始化结果
-    # pred_dataframe = DataFrame(np.zeros_like(error_labels, dtype=bool), columns=error_labels.columns)
     all_features = {}
     all_representatives = {}
     all_clusters = {}
 
-    # 处理每一列
     for column in dataframe.columns:
         if verbose:
             print(f"\nProcessing column: {column}")
@@ -612,23 +573,13 @@ def cluster_dataset(dataframe: DataFrame, cluster_params=None, verbose=False):
 
 
 def propagate_labels_from_clusters(
-    cluster_dataframe: DataFrame,
-    representatives_dataframe: DataFrame,
-    error_labels: DataFrame,
-    verbose=False
+        cluster_dataframe: DataFrame,
+        representatives_dataframe: DataFrame,
+        error_labels: DataFrame,
+        verbose=False
 ):
     """
-    从聚类结果中传播标签。
-
-    参数:
-        feature_dataframe: DataFrame，特征矩阵
-        cluster_dataframe: DataFrame，聚类结果
-        representatives_dataframe: DataFrame，代表点索引
-        error_labels: DataFrame，真实错误标签
-        verbose: bool，是否输出详细信息
-
-    返回:
-        DataFrame: 每列传播后的预测标签
+    Propagate error labels based on clustering results.
     """
     if cluster_dataframe.empty or representatives_dataframe.empty:
         raise ValueError("Empty cluster or representatives dataframe provided")

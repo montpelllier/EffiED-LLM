@@ -1,16 +1,13 @@
-
 def gen_err_prompt(column_name, data_json):
     """
-    创建用于检测拼写错误的提示模板
+    Prompt template for error detection in a specific column of a dataset.
     """
     prompt = f"""
-You are given a list of data row extracted from a dataset, where the target column named `{column_name}`. 
-Label each value from the target column as either an error or not an error.
-
-- Each value has an "index" field, which is the original index from the dataset.
-- Do **not** use your own internal numbering (e.g., 0, 1, 2, etc.). Use **only the "index" values provided**.
-- Only label the values in the target column, do not label other columns.
-- Only label the values that you are confident about, do not label the values that you are not sure about.
+Instructions:
+- You are given a list of data rows extracted from a dataset, where the target column named `{column_name}`. Label each value from the target column as either an error or not an error.
+- Use the **original `row_id`** as provided in the input (do not re-number).
+- Only evaluate the `{column_name}` value.
+- Only label values you are confident about. If you are not sure, do not label it as an error.
 
 Input:
 {data_json}
@@ -51,5 +48,3 @@ def gen_metadata_prompt(sample_data_str):
     {sample_data_str}
     """
     return prompt
-
-
