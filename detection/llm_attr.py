@@ -1,5 +1,6 @@
 import random
 
+from dataset import Dataset
 from evaluation.evaluation import evaluate_model, evaluate_column_predictions
 from features import *
 from tmp_util import process_data_chunks, extract_labels
@@ -30,21 +31,29 @@ phi3_8b = 'phi3:3.8b'
 
 model_name = qwen3_4b
 use_thinking = False
-print(f"Using model: {model_name}, thinking mode: {use_thinking}")
+# method = "chat"
+method = "generate"
+max_rows = 10
+print(f"Using model: {model_name}, thinking mode: {use_thinking}, method: {method}")
 
-data_clean = pd.read_csv(f'../data/{dataset_name}_clean.csv', dtype=str)
-data_error = pd.read_csv(f'../data/{dataset_name}_error-01.csv', dtype=str)
-err_labels = data_clean != data_error
+datset = Dataset(dataset_name)
+data_error = datset.dirty_data
+err_labels = datset.error_labels
 pred_df = DataFrame(np.zeros_like(data_error, dtype=bool), columns=data_error.columns)
 
 cluster_params = {
-    'n_clusters': 30,
+    'n_clusters': 20,
 }
-max_rows = 1
 cluster_df, repre_df = cluster_dataset(data_error, cluster_params=cluster_params)
+print(repre_df.head(3))
 
+column_num = len(data_error.columns)
 nmi_matrix = compute_nmi_matrix(data_error)
-related_col_dict = get_top_nmi_relations(nmi_matrix)
+related_col_dict = get_top_nmi_relations(nmi_matrix, max_attr=column_num, min_attr=column_num)
+
+for item in related_col_dict.items():
+    col, related_cols = item
+    print(f"Column '{col}' related to: {related_cols}")
 
 for col in data_error.columns:
     print("---" * 50)
@@ -58,24 +67,16 @@ for col in data_error.columns:
 
     sample_data = data_error.iloc[col_repre]
     sample_val_lst = sample_data[related_cols + [col]].to_dict(orient='records')
-    for i, idx in enumerate(sample_data):
+    for i, idx in enumerate(col_repre):
         sample_val_lst[i]['row_id'] = int(idx)
 
     rows = sample_val_lst
-    print(rows)
     sys_prompt = """
 You are an error detection assistant. Your job is to label whether each value contains an error.
 An error could be a typo or a formatting issue.
 
 Respond ONLY in valid JSON.
 """
-
-    messages = [
-        {
-            "role": "system",
-            "content": sys_prompt,
-        },
-    ]
 
     result_dict = process_data_chunks(
         rows,
@@ -85,7 +86,7 @@ Respond ONLY in valid JSON.
         col_repre,
         use_thinking=use_thinking,
         max_rows=max_rows,
-        method="generate"  # 或 "chat"
+        method=method
     )
 
     sample_labels, missing_indices = extract_labels(col_repre, result_dict)
