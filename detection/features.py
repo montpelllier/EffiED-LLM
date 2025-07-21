@@ -59,7 +59,7 @@ def generate_pattern_feature(series: Series, tokenizer=llm_tokenizer, use_tfidf=
         return DataFrame()
 
     if series.isnull().any():
-        print("Warning: Input series contains NaN values. These will be filled with empty strings.")
+        print("Warning: Input series contains NaN values. These will be filled with \'np.nan\' strings.")
 
     texts = series.fillna('').astype(str).tolist()
 
@@ -89,15 +89,14 @@ def generate_pattern_feature(series: Series, tokenizer=llm_tokenizer, use_tfidf=
     char_vectorizer = TfidfVectorizer(tokenizer=split_character, token_pattern=None)
 
     X_char = char_vectorizer.fit_transform(texts)
-    X_token = vectorizer.fit_transform(texts)
-
-    if X_token.shape[1] > max_features:
-        token_matrix = reduce_dimension(X_token, max_features)
-    else:
-        token_matrix = X_token.toarray()
-
-    for i in range(len(token_matrix)):
-        token_matrix[i] = token_matrix[i] / token_counts[i] if token_counts[i] > 0 else token_matrix[i]
+    # X_token = vectorizer.fit_transform(texts)
+    #
+    # if X_token.shape[1] > max_features:
+    #     token_matrix = reduce_dimension(X_token, max_features)
+    # else:
+    #     token_matrix = X_token.toarray()
+    # for i in range(len(token_matrix)):
+    #     token_matrix[i] = token_matrix[i] / token_counts[i] if token_counts[i] > 0 else token_matrix[i]
 
     # print(token_matrix.shape, X_char.shape, binned_matrix.shape, token_counts_scaled.shape, char_lengths_scaled.shape)
     # token_matrix = X.toarray()
@@ -122,9 +121,6 @@ def generate_fd_feature(dataframe: DataFrame, rhs_col: str):
     """
     Generate functional dependency features for a DataFrame.
     """
-    if dataframe[rhs_col].isnull().any():
-        print(f"Column '{rhs_col}' contains NaN values, which are not allowed for FD feature generation.")
-
     dataframe = dataframe.astype(str)
     lhs_cols = dataframe.columns
 
@@ -294,7 +290,7 @@ def generate_features(dataframe: DataFrame, target_column: str, tokenizer=None, 
     return feature_dataframe
 
 
-def cluster_features(feature_dataframe: DataFrame, cluster_params=None, verbose=False):
+def cluster_features(feature_dataframe: DataFrame, cluster_params, verbose=False):
     """
     Cluster features using hierarchical clustering.
 
@@ -312,7 +308,7 @@ def cluster_features(feature_dataframe: DataFrame, cluster_params=None, verbose=
         raise ValueError("Empty feature dataframe provided for clustering.")
 
     if cluster_params is None:
-        raise ValueError("cluster_params must be provided with 't' and 'criterion' keys.")
+        raise ValueError("Cluster parameters must be provided!")
 
     k = cluster_params.get('n_clusters')
     if verbose:
@@ -551,20 +547,23 @@ def cluster_dataset(dataframe: DataFrame, cluster_params=None, verbose=False):
     all_representatives = {}
     all_clusters = {}
 
-    for column in dataframe.columns:
+    for idx, column in enumerate(dataframe.columns):
         if verbose:
-            print(f"\nProcessing column: {column}")
+            print(f"\nProcessing column: {column}, {idx+1} / {len(dataframe.columns)}")
 
         # 生成特征
         feature_df = generate_features(dataframe, column, tokenizer=llm_tokenizer, use_tfidf=True)
         all_features[column] = feature_df
+        if verbose:
+            print(f"Generated features for column '{column}': {feature_df.shape[0]} rows, {feature_df.shape[1]} features")
 
         # 聚类
-        col_cluster_params = cluster_params or {'n_clusters': 30}
-
+        col_cluster_params = cluster_params or {'n_clusters': 20}
         clusters, representatives = cluster_features(feature_df, cluster_params=col_cluster_params)
         all_representatives[column] = representatives
         all_clusters[column] = clusters
+        if verbose:
+            print(f"Clustered column '{column}': {len(representatives)} representatives, {np.max(clusters) + 1} clusters")
 
     cluster_df = pd.DataFrame(all_clusters, index=dataframe.index, columns=dataframe.columns)
     repre_df = pd.DataFrame(all_representatives, columns=dataframe.columns)
@@ -575,8 +574,7 @@ def cluster_dataset(dataframe: DataFrame, cluster_params=None, verbose=False):
 def propagate_labels_from_clusters(
         cluster_dataframe: DataFrame,
         representatives_dataframe: DataFrame,
-        error_labels: DataFrame,
-        verbose=False
+        error_labels: DataFrame
 ):
     """
     Propagate error labels based on clustering results.
@@ -587,9 +585,6 @@ def propagate_labels_from_clusters(
     pred_dataframe = DataFrame(np.zeros_like(error_labels, dtype=bool), columns=error_labels.columns)
 
     for column in cluster_dataframe.columns:
-        if verbose:
-            print(f"\nProcessing column: {column}")
-
         clusters = cluster_dataframe[column].values
         representatives = representatives_dataframe[column].values
 
