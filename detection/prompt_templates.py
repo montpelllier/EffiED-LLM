@@ -1,4 +1,4 @@
-def gen_err_prompt(column_name: str, data_json, fewshot_str=None):
+def gen_err_prompt(column_name: str, data_json, fewshot_str=None, rule_str=None):
     """
     Prompt template for error detection in a specific column of a dataset.
     """
@@ -11,6 +11,9 @@ Instructions:
 """
     if fewshot_str:
         prompt += fewshot_str
+
+    if rule_str:
+        prompt += rule_str
 
     prompt += f"""
 Input:
@@ -66,12 +69,27 @@ def gen_fewshot_prompt(column, examples):
 
     for i, example in enumerate(examples, 1):
         row_data = {k: v for k, v in example.items() if k not in exclude_keys}
-        val = example[column]
-        label = example["is_error"]
+        origin_val = example[column]
+        clean_val = example['clean_value']
 
         few_shot_prompt += f"Example {i}:\n"
         few_shot_prompt += f"Row: {row_data}\n"
-        few_shot_prompt += f"Check value in column '{column}': {val}\n"
-        few_shot_prompt += f"Is this an error? → {label}\n\n"
+        few_shot_prompt += f"Column: {column}\n"
+        few_shot_prompt += f"Original value: {origin_val}\n"
+        few_shot_prompt += f"Corrected value: {clean_val}\n\n"
 
     return few_shot_prompt
+
+
+def gen_rule_prompt(column, rule):
+    """
+    Generates a prompt for error detection based on rules.
+    """
+    if not rule:
+        return None
+
+    rule_prompt = f"\n\nRules for column '{column}':\n"
+    for key, value in rule.items():
+        rule_prompt += f"{key}: {value}\n"
+
+    return rule_prompt

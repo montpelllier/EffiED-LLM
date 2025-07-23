@@ -112,7 +112,7 @@ def call_llm(model_name: str, prompt=None, messages=None, method="generate", use
 
 
 def process_data_chunks(rows: list[dict], col: str, system_prompt: str, model_name: str, idx_lst: list[int],
-                        max_rows=10, use_thinking=False, fewshot_prompt=None,
+                        max_rows=10, use_thinking=False, fewshot_prompt=None, rule_prompt=None,
                         method=None, logger=None) -> dict[int, bool]:
     """
     Processes data in chunks to detect errors in a specified column using a language model.
@@ -129,7 +129,7 @@ def process_data_chunks(rows: list[dict], col: str, system_prompt: str, model_na
         chunk_idx += 1
         log_info(f"Processing chunk {chunk_idx}: {processed_row_num} / {len(rows)} rows", logger)
 
-        err_prompt = gen_err_prompt(col, chunk_json, fewshot_prompt)
+        err_prompt = gen_err_prompt(col, chunk_json, fewshot_prompt, rule_prompt)
 
         if method == "generate":
             prompt = system_prompt + "\n\n" + err_prompt
@@ -188,13 +188,12 @@ def generate_data_rows(dataframe: DataFrame, columns: list[str], row_indices: li
     return rows
 
 
-def select_few_shot_examples(data_error, err_labels, column, num_examples=2, strategy='balanced'):
+def select_few_shot_examples(dataset, column, num_examples=2, strategy='balanced'):
     """
     Select few-shot examples for the given column
 
     Args:
-        data_error: DataFrame with error data
-        err_labels: DataFrame with error labels
+        dataset: Dataset object containing dirty_data, clean_data, and error_labels
         column: Column name to select examples for
         num_examples: Number of examples to select
         strategy: Selection strategy ('random', 'diverse', 'balanced')
@@ -202,62 +201,57 @@ def select_few_shot_examples(data_error, err_labels, column, num_examples=2, str
     Returns:
         List of example dictionaries
     """
+    dirty_data = dataset.dirty_data
+    clean_data = dataset.clean_data
+    error_labels = dataset.error_labels
 
     examples = []
 
-    if num_examples <= 0:
+    if num_examples <= 0 or num_examples > len(error_labels):
         return examples
 
     if strategy == 'balanced':
         # Try to get balanced examples (both error and non-error)
-        error_indices = err_labels[err_labels[column] == True].index.tolist()
-        clean_indices = err_labels[err_labels[column] == False].index.tolist()
+        error_indices = error_labels[error_labels[column] == True].index.tolist()
+        clean_indices = error_labels[error_labels[column] == False].index.tolist()
 
         # Get roughly half error and half clean examples
-        num_error = min(len(error_indices), num_examples // 2)
-        num_clean = min(len(clean_indices), num_examples - num_error)
+        num_error = min(len(error_indices), num_examples)
+        num_clean = num_examples - num_error
 
-        selected_error = random.sample(error_indices, num_error) if error_indices else []
-        selected_clean = random.sample(clean_indices, num_clean) if clean_indices else []
+        selected_error = random.sample(error_indices, num_error)
+        selected_clean = random.sample(clean_indices, num_clean)
         selected_indices = selected_error + selected_clean
-
-        # If we need more examples, fill with random ones
-        if len(selected_indices) < num_examples:
-            remaining_indices = [i for i in err_labels.index if i not in selected_indices]
-            additional = random.sample(remaining_indices,
-                                       min(len(remaining_indices), num_examples - len(selected_indices)))
-            selected_indices.extend(additional)
 
     elif strategy == 'diverse':
         # Select diverse examples based on value uniqueness
-        unique_values = data_error[column].unique()
+        unique_values = dirty_data[column].unique()
         selected_indices = []
 
         for value in random.sample(list(unique_values), min(len(unique_values), num_examples)):
-            value_indices = data_error[data_error[column] == value].index.tolist()
+            value_indices = dirty_data[dirty_data[column] == value].index.tolist()
             if value_indices:
                 selected_indices.append(random.choice(value_indices))
 
         # Fill remaining with random if needed
         if len(selected_indices) < num_examples:
-            remaining_indices = [i for i in err_labels.index if i not in selected_indices]
+            remaining_indices = [i for i in error_labels.index if i not in selected_indices]
             additional = random.sample(remaining_indices,
                                        min(len(remaining_indices), num_examples - len(selected_indices)))
             selected_indices.extend(additional)
 
     else:  # random
-        selected_indices = random.sample(list(err_labels.index),
-                                         min(len(err_labels.index), num_examples))
+        selected_indices = random.sample(list(error_labels.index),
+                                         min(len(error_labels.index), num_examples))
 
 
     # Create example dictionaries
     for idx in selected_indices:
-        exmaple = {}
-        for col in data_error.columns:
-            exmaple[col] = data_error.loc[idx, col]
+        example = {}
+        for col in dirty_data.columns:
+            example[col] = dirty_data.loc[idx, col]
 
-        label = bool(err_labels.loc[idx, column])
-        exmaple['is_error'] = label
-        examples.append(exmaple)
+        example['clean_value'] = clean_data.loc[idx, column]
+        examples.append(example)
 
     return examples

@@ -3,6 +3,8 @@ import numpy as np
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from typing import Dict, Any, Tuple
 
+from detection.tmp_util import log_info
+
 
 def evaluate_column_predictions(true_labels, pred_labels):
     """
@@ -55,7 +57,8 @@ def evaluate_predictions(true_labels: pd.DataFrame, pred_labels: pd.DataFrame,
             'recall': recall_score(true_flat, pred_flat, zero_division=0),
             'f1': f1_score(true_flat, pred_flat, zero_division=0),
             'error_count': np.sum(true_flat),
-            'predicted_count': np.sum(pred_flat)
+            'predicted_count': np.sum(pred_flat),
+            'error_rate': np.sum(true_flat) / len(true_flat) if len(true_flat) > 0 else 0
         }
 
     # Compute column-wise metrics
@@ -71,7 +74,8 @@ def evaluate_predictions(true_labels: pd.DataFrame, pred_labels: pd.DataFrame,
                 'recall': recall_score(true_col, pred_col, zero_division=0),
                 'f1': f1_score(true_col, pred_col, zero_division=0),
                 'error_count': np.sum(true_col),
-                'predicted_count': np.sum(pred_col)
+                'predicted_count': np.sum(pred_col),
+                'error_rate': np.sum(true_col) / len(true_col) if len(true_col) > 0 else 0
             }
 
         results['columns'] = column_results
@@ -79,7 +83,7 @@ def evaluate_predictions(true_labels: pd.DataFrame, pred_labels: pd.DataFrame,
     return results
 
 
-def print_evaluation_results(results: Dict[str, Any], print_columns: bool = True) -> None:
+def print_evaluation_results(results: Dict[str, Any], print_columns: bool = True, logger=None) -> None:
     """
     Print evaluation results in a formatted table.
 
@@ -90,32 +94,37 @@ def print_evaluation_results(results: Dict[str, Any], print_columns: bool = True
     # Print overall results
     if 'overall' in results:
         overall = results['overall']
-        print("\nOverall Evaluation Results:")
-        print(f"Accuracy:  {overall['accuracy']:.4f}")
-        print(f"Precision: {overall['precision']:.4f}")
-        print(f"Recall:    {overall['recall']:.4f}")
-        print(f"F1 Score:  {overall['f1']:.4f}")
-        print(f"True Error Count: {overall['error_count']}")
-        print(f"Predicted Count:  {overall['predicted_count']}")
+        overall_info = (
+            f"Overall Evaluation Results:\n"
+            f"Accuracy:  {overall['accuracy']:.5f}\n"
+            f"Precision: {overall['precision']:.5f}\n"
+            f"Recall:    {overall['recall']:.5f}\n"
+            f"F1 Score:  {overall['f1']:.5f}\n"
+            f"True Error Count: {overall['error_count']}\n"
+            f"Predicted Count:  {overall['predicted_count']}\n"
+            f"Error Rate: {overall['error_rate']*100:.3f} %\n"
+        )
+        log_info(overall_info, logger)
 
     # Print column-wise results
     if 'columns' in results and print_columns:
-        print("\nColumn-wise Evaluation Results:")
+        log_info("\nColumn-wise Evaluation Results:", logger)
         columns = results['columns']
 
         # Create results table
-        headers = ["Column", "Accuracy", "Precision", "Recall", "F1", "Error Count", "Predicted"]
+        headers = ["Column", "Accuracy", "Precision", "Recall", "F1", "Err. Cnt", "Predicted", "Err. Rate"]
         rows = []
 
         for col, metrics in columns.items():
             row = [
                 col,
-                f"{metrics['accuracy']:.4f}",
-                f"{metrics['precision']:.4f}",
-                f"{metrics['recall']:.4f}",
-                f"{metrics['f1']:.4f}",
+                f"{metrics['accuracy']:.5f}",
+                f"{metrics['precision']:.5f}",
+                f"{metrics['recall']:.5f}",
+                f"{metrics['f1']:.5f}",
                 metrics['error_count'],
-                metrics['predicted_count']
+                metrics['predicted_count'],
+                f"{metrics['error_rate']*100:.3f} %"
             ]
             rows.append(row)
 
@@ -124,13 +133,14 @@ def print_evaluation_results(results: Dict[str, Any], print_columns: bool = True
 
         # Print header
         header_str = " | ".join(h.ljust(col_widths[i]) for i, h in enumerate(headers))
-        print(header_str)
-        print("-" * len(header_str))
+        print("header_str")
+        log_info(header_str, logger)
+        log_info("-" * len(header_str), logger)
 
         # Print data rows
         for row in rows:
             row_str = " | ".join(str(cell).ljust(col_widths[i]) for i, cell in enumerate(row))
-            print(row_str)
+            log_info(row_str, logger)
 
 
 def summarize_results_by_column(true_labels: pd.DataFrame, pred_labels: pd.DataFrame) -> pd.DataFrame:
@@ -164,7 +174,7 @@ def summarize_results_by_column(true_labels: pd.DataFrame, pred_labels: pd.DataF
     return pd.DataFrame(summary)
 
 
-def evaluate_model(true_labels: pd.DataFrame, pred_labels: pd.DataFrame) -> Tuple[Dict[str, Any], pd.DataFrame]:
+def evaluate_model(true_labels: pd.DataFrame, pred_labels: pd.DataFrame, logger=None) -> Tuple[Dict[str, Any], pd.DataFrame]:
     """
     Comprehensive model evaluation - computes metrics and returns both detailed results and summary.
 
@@ -179,7 +189,7 @@ def evaluate_model(true_labels: pd.DataFrame, pred_labels: pd.DataFrame) -> Tupl
     results = evaluate_predictions(true_labels, pred_labels)
 
     # Print formatted results
-    print_evaluation_results(results)
+    print_evaluation_results(results, logger=logger)
 
     # Generate summary DataFrame
     summary_df = summarize_results_by_column(true_labels, pred_labels)
