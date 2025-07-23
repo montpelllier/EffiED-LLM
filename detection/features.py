@@ -32,7 +32,8 @@ def llm_tokenizer(text: str) -> list[str]:
     final_tokens = []
     for token in raw_tokens:
         if token.isdigit():
-            final_tokens.extend(['digit'] * len(token))  # 将数字替换为 'digit' token)
+            # final_tokens.extend(['digit'] * len(token))  # 将数字替换为 'digit' token)
+            final_tokens.extend(list(token))  # 将数字拆分为字符
         else:
             final_tokens.append(token)
     # print(f"Tokenized {text} to {final_tokens}")
@@ -63,16 +64,13 @@ def generate_pattern_feature(series: Series, tokenizer=llm_tokenizer, use_tfidf=
 
     texts = series.fillna('').astype(str).tolist()
 
-    if tokenizer:
-        # print("using tokenizer:", tokenizer.__name__)
-        token_counts = [len(tokenizer(text)) if tokenizer(text) else 0 for text in texts]
-    else:
-        token_counts = [len(text.split()) for text in texts]  # fallback 分词方式
+    # if tokenizer:
+    #     # print("using tokenizer:", tokenizer.__name__)
+    #     token_counts = [len(tokenizer(text)) if tokenizer(text) else 0 for text in texts]
+    # else:
+    #     token_counts = [len(text.split()) for text in texts]  # fallback 分词方式
 
-    char_lengths = [len(text) for text in texts]
 
-    token_counts_scaled = minmax_scaler.fit_transform(np.array(token_counts).reshape(-1, 1))
-    char_lengths_scaled = minmax_scaler.fit_transform(np.array(char_lengths).reshape(-1, 1))
 
     if use_tfidf:
         vectorizer = TfidfVectorizer(
@@ -84,7 +82,13 @@ def generate_pattern_feature(series: Series, tokenizer=llm_tokenizer, use_tfidf=
             tokenizer=tokenizer,
             token_pattern=None
         )
-    binned_matrix, bin_col_names = compute_token_bin_features(texts, tokenizer)
+
+    binned_matrix, bin_col_names, token_counts = compute_token_bin_features(texts, tokenizer, method='quantile', n_bins=30, normalize=True)
+
+    char_lengths = [len(text) for text in texts]
+
+    token_counts_scaled = minmax_scaler.fit_transform(np.array(token_counts).reshape(-1, 1))
+    char_lengths_scaled = minmax_scaler.fit_transform(np.array(char_lengths).reshape(-1, 1))
 
     char_vectorizer = TfidfVectorizer(tokenizer=split_character, token_pattern=None)
 
@@ -198,48 +202,80 @@ def generate_semantic_features(
     return pd.DataFrame(embeddings, columns=column_names)
 
 
-def compute_token_bin_features(texts, tokenizer, bin_edges=None, normalize=True):
+def compute_token_bin_features(texts, tokenizer, n_bins=30, method='quantile', normalize=True):
     """
     Calculate token binning features for a list of texts.
     """
 
-    if bin_edges is None:
-        bin_edges = [1, 2, 3, 4, 5, 7, 9, 12, 15, 20, 25, 35, 50, 75, 100, 150, 200, 300, 500, 1000, 2000, 5000, 10000]
+    # if bin_edges is None:
+    #     bin_edges = [1, 2, 3, 4, 5, 7, 9, 12, 15, 20, 25, 35, 50, 75, 100, 150, 200, 300, 500, 1000, 2000, 5000, 10000]
 
     if tokenizer:
         tokenized = [tokenizer(text) if tokenizer(text) else [] for text in texts]
     else:
         tokenized = [text.split() for text in texts]
     # 统计词频时数字token拆成字符
+    # 37 patients
+
     flat_tokens = []
+    token_cnt = []
     for toks in tokenized:
+        token_cnt.append(len(toks))
         for tok in toks:
-            if tok.isdigit():
-                flat_tokens.extend(list(tok))
-            else:
-                flat_tokens.append(tok)
+            flat_tokens.append(tok)
 
     token_tf = Counter(flat_tokens)
+    token_freqs = np.array(list(token_tf.values()))
+    n_bins = min(n_bins, len(token_freqs))
 
-    bin_labels = [f"≤{b}" for b in bin_edges] + [f">{bin_edges[-1]}"]
-    bin_index = {label: idx for idx, label in enumerate(bin_labels)}
+    if method == 'quantile':
+        bin_edges = np.unique(np.percentile(token_freqs, np.linspace(0, 100, n_bins + 1)))
+    elif method == 'uniform':
+        bin_edges = np.linspace(token_freqs.min(), token_freqs.max(), n_bins + 1)
+    elif method == 'log':
+        token_freqs_log = np.log1p(token_freqs)
+        bin_edges = np.expm1(np.linspace(token_freqs_log.min(), token_freqs_log.max(), n_bins + 1))
+    else:
+        raise ValueError("Invalid binning method. Choose from 'quantile', 'uniform', or 'log'.")
 
-    def assign_bin(freq):
-        for b in bin_edges:
-            if freq <= b:
-                return f"≤{b}"
-        return f">{bin_edges[-1]}"
+    bin_edges = np.unique(bin_edges)  # Ensure uniqueness
+    # print(bin_edges)
+    # bin_labels = [f"bin_tf_{i}" for i in range(len(bin_edges) - 1)]
+    bin_labels = [f"<{b}" for b in bin_edges] + [f">={bin_edges[-1]}"]
 
+    def get_bin_idx(freq):
+        return np.searchsorted(bin_edges[1:], freq, side='right')
+
+    # Build feature matrix
     binned_matrix = np.zeros((len(texts), len(bin_labels)))
 
-    # split token into characters if it is a digit
     for i, toks in enumerate(tokenized):
         for tok in toks:
             units = list(tok) if tok.isdigit() else [tok]
             for unit in units:
                 tf = token_tf.get(unit, 0)
-                bin_label = assign_bin(tf)
-                binned_matrix[i, bin_index[bin_label]] += 1
+                bin_idx = get_bin_idx(tf)
+                binned_matrix[i, bin_idx] += 1
+
+    # bin_labels = [f"≤{b}" for b in bin_edges] + [f">{bin_edges[-1]}"]
+    # bin_index = {label: idx for idx, label in enumerate(bin_labels)}
+    #
+    # def assign_bin(freq):
+    #     for b in bin_edges:
+    #         if freq <= b:
+    #             return f"≤{b}"
+    #     return f">{bin_edges[-1]}"
+
+    # binned_matrix = np.zeros((len(texts), len(bin_labels)))
+    #
+    # # split token into characters if it is a digit
+    # for i, toks in enumerate(tokenized):
+    #     for tok in toks:
+    #         units = list(tok) if tok.isdigit() else [tok]
+    #         for unit in units:
+    #             tf = token_tf.get(unit, 0)
+    #             bin_label = assign_bin(tf)
+    #             binned_matrix[i, bin_index[bin_label]] += 1
 
     # row normalization
     if normalize:
@@ -247,7 +283,7 @@ def compute_token_bin_features(texts, tokenizer, bin_edges=None, normalize=True)
         row_sums[row_sums == 0] = 1  # 避免除以0
         binned_matrix = binned_matrix / row_sums
 
-    return binned_matrix, [f"bin_tf_{label}" for label in bin_labels]
+    return binned_matrix, [f"bin_tf_{label}" for label in bin_labels], token_cnt
 
 
 def reduce_dimension(feature_vector: ndarray, n_components=None):
@@ -426,9 +462,6 @@ def propagate_labels(clusters: ndarray, representatives: list | ndarray, rep_lab
     if len(representatives) != len(rep_labels):
         raise ValueError("Length of representatives must match length of rep_labels.")
 
-    if len(representatives) != np.max(clusters) + 1:
-        raise ValueError("Length of representatives must match number of clusters.")
-
     # print(f"Number of clusters: {np.max(clusters) + 1}, Number of representatives: {len(representatives)}, Number of labels: {len(rep_labels)}")
 
     propagated_labels = np.zeros(len(clusters), dtype=bool)
@@ -559,7 +592,7 @@ def cluster_dataset(dataframe: DataFrame, cluster_params=None, verbose=False):
 
         # 聚类
         col_cluster_params = cluster_params or {'n_clusters': 20}
-        clusters, representatives = cluster_features(feature_df, cluster_params=col_cluster_params)
+        clusters, representatives = cluster_features(feature_df, cluster_params=col_cluster_params, verbose=verbose)
         all_representatives[column] = representatives
         all_clusters[column] = clusters
         if verbose:
@@ -588,10 +621,12 @@ def propagate_labels_from_clusters(
         clusters = cluster_dataframe[column].values
         representatives = representatives_dataframe[column].values
 
-        true_error_mask = error_labels[column].astype(bool)
-        selected_labels = true_error_mask[representatives]
+        valid_representatives = [rep for rep in representatives if rep != -1]
 
-        propagated_labels = propagate_labels(clusters, representatives, selected_labels)
+        true_error_mask = error_labels[column].astype(bool)
+        selected_labels = true_error_mask[valid_representatives]
+
+        propagated_labels = propagate_labels(clusters, valid_representatives, selected_labels)
 
         pred_dataframe[column] = propagated_labels
 
