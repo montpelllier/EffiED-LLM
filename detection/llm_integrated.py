@@ -3,7 +3,7 @@ import os
 import random
 import sys
 
-from detection.prompt_templates import gen_fewshot_prompt
+from detection.prompt_templates import gen_fewshot_prompt, gen_rule_prompt
 from init import *
 from detection.tmp_util import process_data_chunks, extract_labels, generate_data_rows, select_few_shot_examples
 from evaluation.evaluation import evaluate_model, evaluate_column_predictions
@@ -19,8 +19,8 @@ pd.set_option('display.max_columns', None)
 # dataset_name = 'movies_1'
 # dataset_name = 'billionaire'
 # dataset_name = 'beers'
-# dataset_name = 'hospital'
-dataset_name = 'rayyan'
+dataset_name = 'hospital'
+# dataset_name = 'rayyan'
 
 mistral_7b = 'mistral:7b'
 deepseek_r1_8b = 'deepseek-r1:8b'
@@ -33,13 +33,14 @@ gemma3n_e4b = 'gemma3n:e4b'
 gemma3_4b = 'gemma3:4b'
 phi3_8b = 'phi3:3.8b'
 
-model_name = llama3_8b
+model_name = qwen3_4b
 use_thinking = False
-few_shot = 0
-method = "chat"
-# method = "generate"
+few_shot = 2
+# method = "chat"
+method = "generate"
 max_rows = 10
 use_attr = True
+use_rules = True
 improvement = None
 
 cluster_params = {
@@ -59,9 +60,9 @@ logger = get_logger({
 # -----------------------------------------
 logger.info(f"Using model: {model_name}, thinking mode: {use_thinking}, {few_shot}-shot, method: {method}")
 
-datset = Dataset(dataset_name)
-data_error = datset.dirty_data
-err_labels = datset.error_labels
+dataset = Dataset(dataset_name)
+data_error = dataset.dirty_data
+err_labels = dataset.error_labels
 pred_df = DataFrame(np.zeros_like(data_error, dtype=bool), columns=data_error.columns)
 
 cluster_df, repre_df = cluster_dataset(data_error, cluster_params=cluster_params)
@@ -82,9 +83,24 @@ for col in data_error.columns:
     col_cluster = cluster_df[col]
     col_repre = repre_df[col].astype(int).tolist()
 
-    few_shot_examples = select_few_shot_examples(data_error, err_labels, col, num_examples=few_shot, strategy='balanced')
+    few_shot_examples = select_few_shot_examples(dataset, col, num_examples=few_shot, strategy='balanced')
     few_shot_prompt = gen_fewshot_prompt(col, few_shot_examples)
     logger.info(f"Few-shot examples for column '{col}': {few_shot_prompt}")
+
+
+    if use_rules:
+        rule = dataset.rules.get(col, None)
+        if rule:
+            logger.info(f"Using rules for column '{col}': {rule}")
+        else:
+            logger.warning(f"No rules found for column '{col}', proceeding without rules.")
+
+    else:
+        rule = None
+
+    rule_prompt = gen_rule_prompt(col, rule)
+
+
 
     if use_attr:
         related_cols = related_col_dict[col]
@@ -110,6 +126,7 @@ Respond ONLY in valid JSON.
         col_repre,
         use_thinking=use_thinking,
         fewshot_prompt=few_shot_prompt,
+        rule_prompt=rule_prompt,
         max_rows=max_rows,
         method=method,
         logger=logger

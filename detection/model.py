@@ -12,10 +12,10 @@ class LabelList(BaseModel):
 
 class ColumnMetadata(BaseModel):
     name: str
-    description: str
-    schema_org: str
+    meaning: str
     data_type: str
-    related_cols: list[str]
+    format_rule: str
+    null_value_rule: str
 
 
 class ColumnMetadataList(BaseModel):

@@ -17,10 +17,16 @@ class Dataset:
         dataset_path = current_dir / 'datasets' / dataset
         clean_path = dataset_path / 'clean.csv'
         dirty_path = dataset_path / 'dirty.csv'
+        rule_path = dataset_path / 'rule.json'
 
         self.clean_data = pandas.read_csv(clean_path, dtype=str)
         self.dirty_data = pandas.read_csv(dirty_path, dtype=str)
         self.clean_data.columns = self.dirty_data.columns  # Ensure columns match
+
+        if rule_path.exists():
+            rules = pandas.read_json(rule_path)
+            columns_df = pandas.json_normalize(rules['columns'])
+            self.rules = columns_df.set_index('name').to_dict(orient='index')
 
         if dataset == 'hospital':
             columns_to_drop = ['address_2', 'address_3']
