@@ -4,8 +4,7 @@ def gen_err_prompt(column_name: str, data_json, fewshot_str=None, rule_str=None)
     """
     prompt = f"""
 Instructions:
-- You are given a list of data rows extracted from a dataset, where the target column named `{column_name}`. Label each value from the target column as either an error or not an error.
-- Use the **original `row_id`** as provided in the input (do not re-number).
+- You are given a list of data rows extracted from a dataset, where the target column named `{column_name}`. Label each value from the target column as either an error or not an error. An error could be a typo or a formatting issue.
 - Only evaluate the `{column_name}` value.
 - Only label values you are confident about. If you are not sure, do not label it as an error.
 """
