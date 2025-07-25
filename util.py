@@ -27,29 +27,27 @@ def execute_function(function_code: str, val):
     return function(val)
 
 
-def compute_nmi_matrix(data):
-    data_copy = data.copy()
-    nmi_matrix = pd.DataFrame(index=data.columns, columns=data.columns, dtype=float)
+def compute_nmi_matrix(dataframe: pd.DataFrame) -> pd.DataFrame:
+    data_copy = dataframe.copy()
+    nmi_matrix = pd.DataFrame(index=dataframe.columns, columns=dataframe.columns, dtype=float)
 
-    for col1 in data.columns:
-        for col2 in data.columns:
+    for col1 in dataframe.columns:
+        for col2 in dataframe.columns:
             valid_idx = data_copy[[col1, col2]].dropna().index
             if len(valid_idx) > 0:
                 x = data_copy.loc[valid_idx, col1]
                 y = data_copy.loc[valid_idx, col2]
                 nmi = normalized_mutual_info_score(x, y)
-                # nmi_matrix.loc[col1, col2] = round(nmi, 4)
                 nmi_matrix.loc[col1, col2] = nmi
             else:
                 nmi_matrix.loc[col1, col2] = np.nan  # 无有效数据
-            # nmi = normalized_mutual_info_score(df_copy[col1], df_copy[col2])
-            # nmi_matrix.loc[col1, col2] = round(nmi, 4)
 
     return nmi_matrix
 
 
-def get_top_nmi_relations(data, threshold=0.9, max_top=3):
-    nmi_matrix = compute_nmi_matrix(data)
+def get_top_nmi_relations(nmi_matrix, threshold=0.9, max_attr=3, min_attr=1):
+    # nmi_matrix = compute_nmi_matrix(data)
+    assert min_attr <= max_attr, "min_attr should be less than or equal to max_attr"
 
     result = {}
 
@@ -58,17 +56,18 @@ def get_top_nmi_relations(data, threshold=0.9, max_top=3):
         sorted_scores = scores.sort_values(ascending=False)
         high_nmi = sorted_scores[sorted_scores > threshold]
 
-        if len(high_nmi) > max_top:
-            selected = high_nmi.head(max_top)
-        elif len(high_nmi) > 0:
+        if len(high_nmi) >= max_attr > 0:
+            selected = high_nmi.head(max_attr)
+        elif len(high_nmi) >= min_attr > 0:
             selected = high_nmi
+        elif min_attr > len(high_nmi):
+            selected = sorted_scores.head(min_attr)
         else:
-            selected = sorted_scores.head(1)  # 保底至少一个
+            selected = pd.Series(dtype=float)
 
         result[col] = list(selected.index)
 
     return result
-
 
 
 
@@ -216,6 +215,7 @@ def extract_json_list(response_text, pattern=None):
             print(f'Parse error: {json_str}')
             return None
     print("No valid JSON array found in the response.")
+    print(f"Response text: {response_text}")
     return None
 
 
@@ -335,8 +335,9 @@ def label_cells_from_judgments(
 
             # 遍历所有列判断
             for col, status in column_judgments.items():
-                for idx in matching_rows:
-                    label_df.at[idx, col] = status == "SUSPICIOUS"
+                if col in label_df.columns: # 确保列存在于label_df中
+                    for idx in matching_rows:
+                        label_df.at[idx, col] = status == "SUSPICIOUS"
 
     return label_df
 
@@ -362,3 +363,33 @@ def select_key_column(nmi_matrix: pd.DataFrame, column_group: list[str]) -> str:
             key_column = col
 
     return key_column
+
+def aggregate_consistent_predictions(results: list[list[dict]]):
+    """
+    Aggregate multiple LLM runs by majority voting. Returns final predictions.
+    Only values agreed upon by >= threshold of runs are marked as SUSPICIOUS.
+    """
+    from collections import defaultdict, Counter
+
+    vote_dict = defaultdict(lambda: defaultdict(list))  # row_id -> column -> [votes]
+
+    for result in results:
+        for row in result:
+            row_id = row["row_id"]
+            for col, judgment in row["column_judgments"].items():
+                vote_dict[row_id][col].append(judgment)
+
+    final = []
+    for row_id, col_votes in vote_dict.items():
+        col_judgments = {}
+        for col, votes in col_votes.items():
+            counts = Counter(votes)
+            suspicious_num = counts["SUSPICIOUS"]
+            reasonable_num = counts["REASONABLE"]
+            if suspicious_num > reasonable_num:
+                col_judgments[col] = "SUSPICIOUS"
+            else:
+                col_judgments[col] = "REASONABLE"
+        final.append({"row_id": row_id, "column_judgments": col_judgments})
+
+    return final
