@@ -43,6 +43,7 @@ def get_logger(config):
     dataset_name = config.get('dataset_name')
     use_thinking = config.get('use_thinking')
     few_shot = config.get('few_shot')
+    use_rules = config.get('use_rules')
     use_attr = config.get('use_attr')
     method = config.get('method')
     max_rows = config.get('max_rows')
@@ -50,9 +51,10 @@ def get_logger(config):
     safe_model_name = model_name.replace(':', '_')  # 将冒号替换为下划线
     think = "think" if use_thinking else "no-think"
     context = "attr" if use_attr else "value"
+    rule = "rule" if use_rules else "no-rule"
     time = pandas.Timestamp.now().strftime('%Y-%m-%d_%H-%M-%S')
 
-    log_filename = f'logs/{safe_model_name}/{dataset_name}_{think}_{few_shot}shot ({context},{method},batch={max_rows}) {time}.log'
+    log_filename = f'logs/{safe_model_name}/{dataset_name}_{think}_{few_shot}shot_{rule} ({context},{method},batch={max_rows}) {time}.log'
 
     current_dir = Path(__file__).parent
     log_filename = current_dir / log_filename
