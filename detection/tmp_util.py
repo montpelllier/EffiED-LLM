@@ -1,11 +1,13 @@
+import json
 import random
 import re
+import time
 
-import ollama
 from pandas import DataFrame
 
 from detection.model import LabelList
 from detection.prompt_templates import gen_err_prompt
+from llm_wrapper.llm import *
 
 
 def log_info(message, logger=None):
@@ -27,6 +29,7 @@ def extract_label_list_json(response_content: str) -> str:
     else:
         print("⚠️ No valid JSON found in response, using raw content")
         json_str = response_content.strip()
+        print(json_str)
 
     return json_str
 
@@ -72,11 +75,12 @@ def chunk_rows_by_length(rows_data: list[dict], max_chars=None, max_rows=None):
         yield batch
 
 
-def call_llm(model_name: str, prompt=None, messages=None, method="generate", use_thinking=False, model_config=None):
+def call_llm(model: BaseLLM, prompt=None, messages=None, method="generate", use_thinking=False, model_config=None,
+             format_json=None):
     """
     Uses the Ollama API to call a language model with the given prompt or messages.
     """
-    if not model_name:
+    if not model_config:
         options = {
             "temperature": 0,
             "seed": 42,
@@ -84,34 +88,43 @@ def call_llm(model_name: str, prompt=None, messages=None, method="generate", use
     else:
         options = model_config
 
+    if isinstance(model, OllamaLLM):
+        params = {
+            'think': use_thinking,
+            'format': format_json.model_json_schema(),
+            'options': options
+        }
+    else:
+        params = {
+            'temperature': options.get('temperature'),
+            'response_format': format_json,
+        }
+        time.sleep(5)
+
     if method == "generate":
-        response = ollama.generate(
-            model=model_name,
+        response = model.generate(
             prompt=prompt,
-            format=LabelList.model_json_schema(),
-            think=use_thinking,
-            options=options
-        ).response
-        return response
+            **params,
+        )
 
     elif method == 'chat':  # chat
         if not messages:
             raise ValueError("Messages must be provided for chat method.")
         messages.append({"role": "user", "content": prompt})
 
-        response = ollama.chat(
-            model=model_name,
+        response = model.chat(
             messages=messages,
-            format=LabelList.model_json_schema(),
             think=use_thinking,
+            format=LabelList.model_json_schema(),
             options=options
-        ).message
-        return response.content
+        )
     else:
         raise ValueError("Method must be 'generate' or 'chat'. Please check your input.")
 
+    return response
 
-def process_data_chunks(rows: list[dict], col: str, system_prompt: str, model_name: str, idx_lst: list[int],
+
+def process_data_chunks(row_list: list[dict], column: str, system_prompt: str, llm: BaseLLM, idx_lst: list[int],
                         max_rows=10, use_thinking=False, fewshot_prompt=None, rule_prompt=None,
                         method=None, logger=None) -> dict[int, bool]:
     """
@@ -123,22 +136,53 @@ def process_data_chunks(rows: list[dict], col: str, system_prompt: str, model_na
     messages = [{"role": "system", "content": system_prompt}]
     prompt = None
 
-    for chunk in chunk_rows_by_length(rows, max_rows=max_rows):
+    for i in range(0, len(row_list), max_rows):
+        chunk_rows = row_list[i:i + max_rows]
+        row_ids = [row['row_id'] for row in chunk_rows]
+        label_list = {
+            "labels": [{"row_id": rid, "is_error": None} for rid in row_ids]
+        }
+
+        output_template = f"""
+Please fill in the \"is_error\" field (either `true` or `false`) in the following JSON template\n
+{json.dumps(label_list, indent=2, ensure_ascii=False)}
+"""
+        # print(str(label_list))
+        chunk = []
+        for row in chunk_rows:
+            keys = row.keys()
+            row_str = '{' + ', '.join(f'"{key}": "{row[key]}"' for key in keys) + '}'
+            chunk.append(row_str)
+
+        # for chunk in chunk_rows_by_length(row_list, max_rows=max_rows):
         chunk_json = "[\n\t" + ",\n".join(chunk) + "\n]"
         processed_row_num += len(chunk)
         chunk_idx += 1
-        log_info(f"Processing chunk {chunk_idx}: {processed_row_num} / {len(rows)} rows", logger)
+        log_info(f"Processing chunk {chunk_idx}: {processed_row_num} / {len(row_list)} rows", logger)
 
-        err_prompt = gen_err_prompt(col, chunk_json, fewshot_prompt, rule_prompt)
+        err_prompt = gen_err_prompt(column, chunk_json, fewshot_prompt, rule_prompt)
+        err_prompt += output_template
+        # print(err_prompt)
 
         if method == "generate":
             prompt = system_prompt + "\n\n" + err_prompt
+            print(f"prompt length: {len(prompt)}")
         elif method == "chat":
             messages.append({"role": "user", "content": err_prompt})
 
-        response = call_llm(model_name, prompt=prompt, messages=messages, method=method, use_thinking=use_thinking)
+        if isinstance(llm, OllamaLLM):
+            format_json = LabelList
+        else:
+            format_json = None
+        response = call_llm(llm, prompt=prompt, messages=messages, method=method, use_thinking=use_thinking,
+                            format_json=format_json)
         json_str = extract_label_list_json(response)
-        parsed = LabelList.model_validate_json(json_str)
+        try:
+            parsed = LabelList.model_validate_json(json_str)
+        except Exception as e:
+            # log_info()
+            log_info(f"⚠️ERROR: Failed to parse JSON response: {json_str} with error {e}", logger)
+            continue
 
         if method == "chat":
             messages.append({"role": "assistant", "content": json_str})
@@ -146,18 +190,21 @@ def process_data_chunks(rows: list[dict], col: str, system_prompt: str, model_na
         for label in parsed.labels:
             idx = int(label.row_id)
             if idx not in idx_lst:
-                log_info(f"⚠️WARNING: Row index {idx} not found in samples for column '{col}'", logger)
+                log_info(f"⚠️WARNING: Row index {idx} not found in samples for column '{column}'", logger)
                 continue
             else:
                 result_dict[idx] = label.is_error
 
         if len(chunk) != len(parsed.labels):
-            log_info(f"Warning: Chunk {chunk_idx} processed {len(parsed.labels)} labels, but expected {len(chunk)} rows.", logger)
+            log_info(
+                f"Warning: Chunk {chunk_idx} processed {len(parsed.labels)} labels, but expected {len(chunk)} rows.",
+                logger)
 
     return result_dict
 
 
-def extract_labels(sample_idx_list: list[int], label_result: dict[int, bool], logger=None) -> tuple[list[bool], set[int]]:
+def extract_labels(sample_idx_list: list[int], label_result: dict[int, bool], logger=None) -> tuple[
+    list[bool], set[int]]:
     """
     Extracts labels from the result dictionary based on the provided sample indices.
     """
@@ -243,7 +290,6 @@ def select_few_shot_examples(dataset, column, num_examples=2, strategy='balanced
     else:  # random
         selected_indices = random.sample(list(error_labels.index),
                                          min(len(error_labels.index), num_examples))
-
 
     # Create example dictionaries
     for idx in selected_indices:
