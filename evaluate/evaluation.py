@@ -1,9 +1,10 @@
-import pandas as pd
-import numpy as np
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from typing import Dict, Any, Tuple
 
-from detection.tmp_util import log_info
+import numpy as np
+import pandas as pd
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+from ed.util import log_info
 
 
 def evaluate_column_predictions(true_labels, pred_labels):
@@ -102,7 +103,7 @@ def print_evaluation_results(results: Dict[str, Any], print_columns: bool = True
             f"F1 Score:  {overall['f1']:.5f}\n"
             f"True Error Count: {overall['error_count']}\n"
             f"Predicted Count:  {overall['predicted_count']}\n"
-            f"Error Rate: {overall['error_rate']*100:.3f} %\n"
+            f"Error Rate: {overall['error_rate'] * 100:.3f} %\n"
         )
         log_info(overall_info, logger)
 
@@ -124,7 +125,7 @@ def print_evaluation_results(results: Dict[str, Any], print_columns: bool = True
                 f"{metrics['f1']:.5f}",
                 metrics['error_count'],
                 metrics['predicted_count'],
-                f"{metrics['error_rate']*100:.3f} %"
+                f"{metrics['error_rate'] * 100:.3f} %"
             ]
             rows.append(row)
 
@@ -174,7 +175,8 @@ def summarize_results_by_column(true_labels: pd.DataFrame, pred_labels: pd.DataF
     return pd.DataFrame(summary)
 
 
-def evaluate_model(true_labels: pd.DataFrame, pred_labels: pd.DataFrame, logger=None) -> Tuple[Dict[str, Any], pd.DataFrame]:
+def evaluate_prediction(true_labels: pd.DataFrame, pred_labels: pd.DataFrame, logger=None) -> Tuple[
+    Dict[str, Any], pd.DataFrame]:
     """
     Comprehensive model evaluation - computes metrics and returns both detailed results and summary.
 

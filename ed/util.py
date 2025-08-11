@@ -1,12 +1,14 @@
 import json
 import random
 import re
-import time
 
+import numpy as np
+import pandas as pd
 from pandas import DataFrame
+from sklearn.metrics import normalized_mutual_info_score
 
-from detection.model import LabelList
-from detection.prompt_templates import gen_err_prompt
+from ed.model import LabelList
+from ed.prompt_templates import gen_err_prompt
 from llm_wrapper.llm import *
 
 
@@ -80,6 +82,7 @@ def call_llm(model: BaseLLM, prompt=None, messages=None, method="generate", use_
     """
     Uses the Ollama API to call a language model with the given prompt or messages.
     """
+    # print(prompt)
     if not model_config:
         options = {
             "temperature": 0,
@@ -94,12 +97,13 @@ def call_llm(model: BaseLLM, prompt=None, messages=None, method="generate", use_
             'format': format_json.model_json_schema(),
             'options': options
         }
+        sleep_time = 0
     else:
         params = {
             'temperature': options.get('temperature'),
             'response_format': format_json,
         }
-        time.sleep(5)
+        sleep_time = 10
 
     if method == "generate":
         response = model.generate(
@@ -120,6 +124,9 @@ def call_llm(model: BaseLLM, prompt=None, messages=None, method="generate", use_
         )
     else:
         raise ValueError("Method must be 'generate' or 'chat'. Please check your input.")
+
+    if sleep_time > 0:
+        time.sleep(sleep_time)
 
     return response
 
@@ -301,3 +308,46 @@ def select_few_shot_examples(dataset, column, num_examples=2, strategy='balanced
         examples.append(example)
 
     return examples
+
+
+def compute_nmi_matrix(dataframe: pd.DataFrame) -> pd.DataFrame:
+    data_copy = dataframe.copy()
+    nmi_matrix = pd.DataFrame(index=dataframe.columns, columns=dataframe.columns, dtype=float)
+
+    for col1 in dataframe.columns:
+        for col2 in dataframe.columns:
+            valid_idx = data_copy[[col1, col2]].dropna().index
+            if len(valid_idx) > 0:
+                x = data_copy.loc[valid_idx, col1]
+                y = data_copy.loc[valid_idx, col2]
+                nmi = normalized_mutual_info_score(x, y)
+                nmi_matrix.loc[col1, col2] = nmi
+            else:
+                nmi_matrix.loc[col1, col2] = np.nan  # 无有效数据
+
+    return nmi_matrix
+
+
+def get_top_nmi_relations(nmi_matrix, threshold=0.9, max_attr=3, min_attr=1):
+    # nmi_matrix = compute_nmi_matrix(data)
+    assert min_attr <= max_attr, "min_attr should be less than or equal to max_attr"
+
+    result = {}
+
+    for col in nmi_matrix.columns:
+        scores = nmi_matrix.loc[col].drop(index=col)  # 排除自己
+        sorted_scores = scores.sort_values(ascending=False)
+        high_nmi = sorted_scores[sorted_scores > threshold]
+
+        if len(high_nmi) >= max_attr > 0:
+            selected = high_nmi.head(max_attr)
+        elif len(high_nmi) >= min_attr > 0:
+            selected = high_nmi
+        elif min_attr > len(high_nmi):
+            selected = sorted_scores.head(min_attr)
+        else:
+            selected = pd.Series(dtype=float)
+
+        result[col] = list(selected.index)
+
+    return result

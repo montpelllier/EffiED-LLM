@@ -8,34 +8,16 @@ Instructions:
 - Only evaluate the `{column_name}` value.
 - Only label values you are confident about. If you are not sure, do not label it as an error.
 """
+    if rule_str:
+        prompt += "- If value does not follow the rules, label it as an error.\n"
+        prompt += rule_str
+
     if fewshot_str:
         prompt += fewshot_str
-
-    if rule_str:
-        prompt += rule_str
 
     prompt += f"""
 Input:
 {data_json}
-"""
-    return prompt
-
-
-def gen_attr_prompt(column_name, data_json):
-    """
-    创建用于检测拼写错误的提示模板
-    """
-    prompt = f"""
-You are given a list of data row extracted from a dataset, where the target column named `{column_name}`. 
-Label each value from the target column as either an error or not an error.
-
-- Each value has an "index" field, which is the original index from the dataset.
-- Do **not** use your own internal numbering (e.g., 0, 1, 2, etc.). Use **only the "index" values provided**.
-- Only label the values in the target column, do not label other columns.
-- Only label the values that you are confident about, do not label the values that you are not sure about.
-
-Input:
-For value in the row index {data_json}
 """
     return prompt
 
@@ -55,6 +37,7 @@ def gen_metadata_prompt(sample_data_str):
     """
     return prompt
 
+
 def gen_fewshot_prompt(column, examples):
     """
     Generates a few-shot prompt for error detection based on sample data.
@@ -62,7 +45,7 @@ def gen_fewshot_prompt(column, examples):
     if not examples or len(examples) == 0:
         return None
 
-    exclude_keys = [column, 'is_error']
+    exclude_keys = ['clean_value']
 
     few_shot_prompt = "\n\nHere are some examples:\n\n"
 
