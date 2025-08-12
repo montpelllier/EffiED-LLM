@@ -1,0 +1,81 @@
+{
+  "columns": [
+    {
+      "name": "index",
+      "meaning": "Unique identifier for each row in the dataset.",
+      "data_type": "integer",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "id",
+      "meaning": "Unique identifier for each beer entry.",
+      "data_type": "integer",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "beer_name",
+      "meaning": "Name of the beer.",
+      "data_type": "string",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "style",
+      "meaning": "Classification of the beer style.",
+      "data_type": "category",
+      "format_rule": "no specific format",
+      "null_value_rule": "allowed empty string '' for missing data"
+    },
+    {
+      "name": "ounces",
+      "meaning": "Volume of the beer in ounces.",
+      "data_type": "integer",
+      "format_rule": "Must be a plain integer without any units or symbols (e.g., 10, 18).",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "abv",
+      "meaning": "Alcohol by volume percentage.",
+      "data_type": "float",
+      "format_rule": "Must be a plain float with up to 3 decimal places, no % symbols (e.g., 0.021, 0.01).",
+      "null_value_rule": "allowed empty string '' for missing data"
+    },
+    {
+      "name": "ibu",
+      "meaning": "International Bitterness Unit, possibly with a numeric value.",
+      "data_type": "integer",
+      "format_rule": "no specific format",
+      "null_value_rule": "allowed empty string '' for missing data"
+    },
+    {
+      "name": "brewery_id",
+      "meaning": "Unique identifier for each brewery entry.",
+      "data_type": "integer",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "brewery_name",
+      "meaning": "Name of the brewery, possibly with abbreviations or codes derived from other columns (e.g., city).",
+      "data_type": "string",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "city",
+      "meaning": "City where the brewery is located.",
+      "data_type": "category",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "state",
+      "meaning": "State where the brewery is located.",
+      "data_type": "category",
+      "format_rule": "two-letter state abbreviation (e.g., OR)",
+      "null_value_rule": "not allowed"
+    }
+  ]
+}

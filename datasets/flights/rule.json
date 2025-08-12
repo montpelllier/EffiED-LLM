@@ -1,0 +1,60 @@
+{
+  "columns": [
+    {
+      "name": "index",
+      "meaning": "Unique identifier for each row in the dataset.",
+      "data_type": "integer",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "tuple_id",
+      "meaning": "A unique identifier for each row in the dataset.",
+      "data_type": "integer",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "src",
+      "meaning": "The source or origin of the data entry, such as a website, organization, or tracking system.",
+      "data_type": "string",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "flight",
+      "meaning": "The flight identifier, which includes the airline code, flight number, and origin-destination pair.",
+      "data_type": "string",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "sched_dep_time",
+      "meaning": "The scheduled departure time of the flight, formatted as 'HH:MM a.m./p.m.'.",
+      "data_type": "string",
+      "format_rule": "HH:MM a.m./p.m.",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "act_dep_time",
+      "meaning": "The actual departure time of the flight, formatted as 'HH:MM a.m./p.m.'.",
+      "data_type": "string",
+      "format_rule": "HH:MM a.m./p.m.",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "sched_arr_time",
+      "meaning": "The scheduled arrival time of the flight, formatted as 'HH:MM a.m./p.m.'.",
+      "data_type": "string",
+      "format_rule": "HH:MM a.m./p.m.",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "act_arr_time",
+      "meaning": "The actual arrival time of the flight, formatted as 'HH:MM a.m./p.m.'.",
+      "data_type": "string",
+      "format_rule": "HH:MM a.m./p.m.",
+      "null_value_rule": "not allowed"
+    }
+  ]
+}

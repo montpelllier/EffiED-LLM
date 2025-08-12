@@ -1,0 +1,131 @@
+{
+  "columns": [
+    {
+      "name": "index",
+      "meaning": "Unique identifier for each row in the dataset.",
+      "data_type": "integer",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "provider_number",
+      "meaning": "Identifier for healthcare providers, possibly a unique code or number.",
+      "data_type": "string",
+      "format_rule": "5-digit number",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "name",
+      "meaning": "Name of the healthcare provider.",
+      "data_type": "string",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "address_1",
+      "meaning": "First part of the address for the healthcare provider.",
+      "data_type": "string",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "city",
+      "meaning": "City where the healthcare provider is located.",
+      "data_type": "string",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "state",
+      "meaning": "State where the healthcare provider is located.",
+      "data_type": "string",
+      "format_rule": "2-letter state code",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "zip",
+      "meaning": "Zip code for the healthcare provider's location.",
+      "data_type": "string",
+      "format_rule": "5-digit zip code",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "county",
+      "meaning": "County where the healthcare provider is located.",
+      "data_type": "string",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "phone",
+      "meaning": "Phone number for the healthcare provider.",
+      "data_type": "string",
+      "format_rule": "10-digit phone number",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "type",
+      "meaning": "Type of healthcare provider.",
+      "data_type": "string",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "owner",
+      "meaning": "Ownership type of the healthcare provider.",
+      "data_type": "string",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "emergency_service",
+      "meaning": "Whether the healthcare provider offers emergency services.",
+      "data_type": "boolean",
+      "format_rule": "yes or no",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "condition",
+      "meaning": "Condition being measured for each healthcare provider.",
+      "data_type": "string",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "measure_code",
+      "meaning": "Unique code for the measure being reported.",
+      "data_type": "string",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "measure_name",
+      "meaning": "Name of the measure being reported, possibly derived from 'condition' and 'measure_code'.",
+      "data_type": "string",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "score",
+      "meaning": "Score or percentage for the measure being reported.",
+      "data_type": "float",
+      "format_rule": "percentage (e.g., '95%', '64%')",
+      "null_value_rule": "allowed values include string 'empty' for missing numeric data"
+    },
+    {
+      "name": "sample",
+      "meaning": "Number of patients included in the measure being reported.",
+      "data_type": "string",
+      "format_rule": "integer + 'patients' or 'patient'",
+      "null_value_rule": "allowed values include string 'empty' for missing numeric data"
+    },
+    {
+      "name": "state_average",
+      "meaning": "Average score for the measure across all providers in a state, possibly derived from 'measure_code' and 'state'.",
+      "data_type": "string",
+      "format_rule": "combination of measure_code and state (e.g., 'state_measure_code')",
+      "null_value_rule": "not allowed"
+    }
+  ]
+}
+

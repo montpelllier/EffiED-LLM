@@ -1,0 +1,81 @@
+{
+  "columns": [
+    {
+      "name": "spotify_track_uri",
+      "meaning": "Spotify URI that uniquely identifies each track in the form of \"spotify:track:<base-62 string>\"",
+      "data_type": "string",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "ts",
+      "meaning": "Timestamp indicating when the track stopped playing in UTC (Coordinated Universal Time)",
+      "data_type": "datetime",
+      "format_rule": "YYYY-MM-DD HH:MM:SS",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "platform",
+      "meaning": "Platform used when streaming the track.",
+      "data_type": "category",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "ms_played",
+      "meaning": "Number of milliseconds the stream was played.",
+      "data_type": "integer",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "track_name",
+      "meaning": "The name of the musical track being played.",
+      "data_type": "string",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "artist_name",
+      "meaning": "The name of the artist who performed the track.",
+      "data_type": "string",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "album_name",
+      "meaning": "The name of the album to which the track belongs.",
+      "data_type": "string",
+      "format_rule": "no specific format",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "reason_start",
+      "meaning": "Why the track started. E.g., fwdbtn, packbtn, trackdone, clickrow, appload...",
+      "data_type": "category",
+      "format_rule": "no specific format",
+      "null_value_rule": "allowed empty string '' for missing data"
+    },
+    {
+      "name": "reason_end",
+      "meaning": "Why the track ended. E.g., fwdbtn, packbtn, trackdone, clickrow, appload...",
+      "data_type": "category",
+      "format_rule": "no specific format",
+      "null_value_rule": "allowed empty string '' for missing data"
+    },
+    {
+      "name": "shuffle",
+      "meaning": "A boolean flag indicating whether the track was played as part of a shuffled playlist.",
+      "data_type": "boolean",
+      "format_rule": "TRUE or FALSE",
+      "null_value_rule": "not allowed"
+    },
+    {
+      "name": "skipped",
+      "meaning": "A boolean flag indicating whether the track was skipped by the user.",
+      "data_type": "boolean",
+      "format_rule": "TRUE or FALSE",
+      "null_value_rule": "not allowed"
+    }
+  ]
+}
