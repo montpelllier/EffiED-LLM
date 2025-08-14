@@ -40,7 +40,7 @@ class DataPreprocessor:
             dataset_name: Name of the dataset for logging and specific rules
 
         Returns:
-            Tuple of (processed_clean_data, processed_dirty_data, preprocessing_stats)
+            Tuple of (processed_dirty_data, processed_clean_data, error_labels, preprocessing_stats)
 
         Note:
             If clean_data is None, dirty_data will be used for both clean and dirty processing,
@@ -90,7 +90,7 @@ class DataPreprocessor:
         # Store stats for later access
         self.preprocessing_stats[dataset_name] = stats
 
-        return clean_processed, dirty_processed, error_labels, stats
+        return dirty_processed, clean_processed, error_labels, stats
 
     def _remove_empty_columns(self, clean_data: pd.DataFrame, dirty_data: pd.DataFrame,
                               stats: Dict[str, Any], max_empty_ratio: float = 0.95) -> Tuple[
@@ -221,7 +221,7 @@ def preprocess_dataset(dirty_data: pd.DataFrame, clean_data: pd.DataFrame = None
         enable_logging: Whether to enable logging
 
     Returns:
-        Tuple of (processed_clean_data, processed_dirty_data, stats)
+        Tuple of (processed_dirty_data, processed_clean_data, error_labels, stats)
     """
     preprocessor = DataPreprocessor(enable_logging=enable_logging)
     return preprocessor.preprocess_dataset(dirty_data, clean_data, dataset_name)
