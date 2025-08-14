@@ -3,8 +3,7 @@
 提供错误检测结果的评估功能
 """
 
-from .metrics import MetricsCalculator
 from .evaluator import Evaluator
-from .report_generator import ReportGenerator
+from .metrics import MetricsCalculator
 
-__all__ = ['MetricsCalculator', 'Evaluator', 'ReportGenerator']
+__all__ = ['MetricsCalculator', 'Evaluator']
