@@ -10,9 +10,6 @@ import pandas
 import sklearn
 
 
-# Import feature extraction capabilities
-
-
 class LabelPropagator:
     """
     Clustering-based error detection using feature similarity and label propagation.
@@ -24,13 +21,15 @@ class LabelPropagator:
     4. Use labeled representatives to propagate labels to cluster members
     """
 
-    def __init__(self, features: Dict[str, pandas.DataFrame], cluster=None, sample_size=20):
+    def __init__(self, features: Dict[str, pandas.DataFrame], cluster=None, sample_size=20, seed=20):
         """
-        初始化LabelPropagator，支持直接传入聚类对象或使用默认MiniBatchKMeans。
+        Initialize LabelPropagator with support for custom clustering object or default MiniBatchKMeans.
 
         Args:
-            features: 特征字典
-            cluster: sklearn聚类对象（如MiniBatchKMeans），若为None则默认MiniBatchKMeans(n_clusters=20)
+            features: Dictionary of features for each column
+            cluster: sklearn clustering object (e.g., MiniBatchKMeans), defaults to MiniBatchKMeans(n_clusters=20)
+            sample_size: Number of clusters when using default clustering
+            seed: Random seed for reproducible clustering
         """
         feature_lengths = [len(df) for df in features.values()]
         if len(set(feature_lengths)) != 1:
@@ -40,7 +39,8 @@ class LabelPropagator:
         self.length = feature_lengths[0]
 
         if cluster is None:
-            cluster = sklearn.cluster.MiniBatchKMeans(n_clusters=sample_size)
+            cluster = sklearn.cluster.MiniBatchKMeans(n_clusters=sample_size, random_state=seed)
+            print(f"Using clustering algorithm: {cluster}")
         self.cluster = cluster
 
         self.scaler = sklearn.preprocessing.StandardScaler()
@@ -121,6 +121,7 @@ class LabelPropagator:
                     f"Clustered column '{column}': {len(representatives)} representatives, {numpy.max(clusters) + 1} clusters")
 
     def sample(self):
+        """Sample the clustering centriods."""
         if not self.cluster_results or not self.representatives:
             self._cluster()
         cluster_dataframe = pandas.DataFrame(self.cluster_results)
@@ -130,13 +131,14 @@ class LabelPropagator:
 
     def propagate_column_labels(self, column_name: str, representative_labels: Dict[int, bool]):
         """
-        Propagate labels based on clustering results.
+        Propagate labels from representative samples to all cluster members for a specific column.
 
         Args:
-            representative_labels: Error labels for representatives
+            column_name: Name of the column to propagate labels for
+            representative_labels: Dictionary mapping representative sample indices to their labels
 
         Returns:
-            Propagated labels for all data points
+            None (updates self.propagated_labels[column_name] in place)
         """
 
         self.propagated_labels[column_name] = numpy.zeros(self.length, dtype=bool)
@@ -154,6 +156,18 @@ class LabelPropagator:
             self.propagated_labels[column_name][cluster_indices] = label
 
     def propagate_dataset_labels(self, label_dataframe: pandas.DataFrame):
+        """
+        Propagate labels for the entire dataset using clustering results.
+
+        Args:
+            label_dataframe: DataFrame containing true labels for representative samples
+
+        Returns:
+            DataFrame with propagated predictions for all samples
+
+        Raises:
+            ValueError: If column names don't match or dataset length doesn't match
+        """
         if set(label_dataframe.columns) != set(self.features.keys()):
             raise ValueError("column size doesn't match")
         if len(label_dataframe) != self.length:
@@ -172,6 +186,7 @@ class LabelPropagator:
         return self.get_prediction()
 
     def get_prediction(self):
+        """Get the propagation result."""
         if set(self.propagated_labels.keys()) != set(self.features.keys()):
             warnings.warn("Not full prediction!")
         prediction_dataframe = pandas.DataFrame(self.propagated_labels)
