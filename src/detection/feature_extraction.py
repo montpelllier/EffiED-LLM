@@ -280,7 +280,6 @@ class FeatureExtractor:
         n_bins = min(n_bins, len(numpy.unique(token_freqs)))
 
         if method == 'quantile':
-            # Use more efficient percentile calculation
             percentiles = numpy.linspace(0, 100, n_bins)
             bin_edges = numpy.percentile(token_freqs, percentiles)
         elif method == 'uniform':
@@ -296,6 +295,7 @@ class FeatureExtractor:
 
         # Ensure bin_edges are unique and sorted
         bin_edges = numpy.unique(bin_edges)
+        real_n_bins = len(bin_edges)
 
         # Batch calculate bin indices
         token_bin_indices = numpy.digitize(token_freqs, bin_edges) - 1
@@ -316,7 +316,7 @@ class FeatureExtractor:
 
         # Build sparse matrix and convert to dense
         sparse_matrix = scipy.sparse.csr_matrix((data, (row_indices, col_indices)),
-                                                shape=(len(texts), n_bins))
+                                                shape=(len(texts), real_n_bins))
         binned_matrix = sparse_matrix.toarray()
 
         # Normalization
@@ -327,8 +327,8 @@ class FeatureExtractor:
             binned_matrix = binned_matrix / row_sums
 
         # Generate column names
-        bin_labels = [f"bin_tf_{i + 1}_[{bin_edges[i]},{bin_edges[i + 1]})" for i in range(n_bins - 1)]
-        bin_labels.append(f"bin_tf_{n_bins}_[{bin_edges[-1]},+inf)")  # Last column
+        bin_labels = [f"bin_tf_{i + 1}_[{bin_edges[i]},{bin_edges[i + 1]})" for i in range(real_n_bins - 1)]
+        bin_labels.append(f"bin_tf_{real_n_bins}_[{bin_edges[-1]},+inf)")  # Last column
 
         return binned_matrix, bin_labels, token_counts
 
@@ -394,3 +394,10 @@ class FeatureExtractor:
         feature_dataframe = pandas.DataFrame(scaled_features, columns=feature_dataframe.columns)
 
         return feature_dataframe
+
+    def extract_dataset_feature(self, dataframe: pandas.DataFrame):
+        all_feature = {}
+        for column in dataframe.columns:
+            feature_dataframe = self.extract_column_feature(dataframe, column)
+            all_feature[column] = feature_dataframe
+        return all_feature
