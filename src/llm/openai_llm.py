@@ -1,3 +1,4 @@
+import httpx
 import openai
 
 from .base import BaseLLM
@@ -5,9 +6,13 @@ import time
 
 class OpenAILLM(BaseLLM):
     def __init__(self, url, key, measure=False, **kwargs):
+        http_client = httpx.Client(
+            timeout=30.0,
+        )
         self.client = openai.OpenAI(
             base_url=url,
             api_key=key,
+            http_client=http_client
         )
         super().__init__(**kwargs)
         self.measure = measure
@@ -16,8 +21,12 @@ class OpenAILLM(BaseLLM):
             self.total_time = 0
 
     def _is_available(self) -> bool:
-        models = self.client.models.list()
-        return self._model_name in models
+        try:
+            self.client.models.retrieve(self._model_name)
+            return True
+        except Exception as e:
+            print(f"Model not available: {e}")
+            return False
 
     def chat(self, messages, **kwargs):
         response_format = kwargs.pop("response_format", None)
