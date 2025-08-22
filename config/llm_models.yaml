@@ -1,0 +1,32 @@
+# LLM 模型配置文件
+# 管理所有支持的 LLM 模型及其配置参数
+
+# API 配置变量
+api_configs:
+  google:
+    url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+    key: "YOUR-API-KEY"
+
+models:
+  # Ollama API
+  llama3.1:8b:
+    api: ollama
+
+  qwen3:4b:
+    api: ollama
+
+  qwen3:8b:
+    api: ollama
+
+  # OpenAI API
+  gemma-3-27b-it:
+    api: openai
+    api_config: google
+
+  gemma-3-12b-it:
+    api: openai
+    api_config: google
+
+  gemma-3-4b-it:
+    api: openai
+    api_config: google
