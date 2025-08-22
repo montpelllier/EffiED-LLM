@@ -5,15 +5,19 @@ import time
 
 class OpenAILLM(BaseLLM):
     def __init__(self, url, key, measure=False, **kwargs):
-        super().__init__(**kwargs)
         self.client = openai.OpenAI(
             base_url=url,
             api_key=key,
         )
+        super().__init__(**kwargs)
         self.measure = measure
         if self.measure:
             self.total_tokens = 0
             self.total_time = 0
+
+    def _is_available(self) -> bool:
+        models = self.client.models.list()
+        return self._model_name in models
 
     def chat(self, messages, **kwargs):
         response_format = kwargs.pop("response_format", None)
@@ -21,7 +25,7 @@ class OpenAILLM(BaseLLM):
 
         if response_format:
             response = self.client.chat.completions.parse(
-                model=self.model_name,
+                model=self._model_name,
                 messages=messages,
                 response_format=response_format,
                 **kwargs,
@@ -29,7 +33,7 @@ class OpenAILLM(BaseLLM):
 
         else:
             response = self.client.chat.completions.create(
-                model=self.model_name,
+                model=self._model_name,
                 messages=messages,
                 **kwargs,
             )
