@@ -11,10 +11,8 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent / 'src'))
 
 import evaluation
-from data.loader import DatasetLoader
-from data.preprocessing import preprocess_dataset
-from detection import FeatureExtractor
-from detection.propagation import LabelPropagator
+from data import DatasetLoader, preprocess_dataset
+from detection import FeatureExtractor, LabelPropagator
 
 
 def run_label_propagation_experiment(dataset_name: str, sample_size: int = 20, seed: int = 114,
@@ -38,9 +36,8 @@ def run_label_propagation_experiment(dataset_name: str, sample_size: int = 20, s
     start_time = time.time()
     datasetloader = DatasetLoader()
     dataset = datasetloader.load_dataset(dataset_name)
-    dirty_data, clean_data, err_labels, stats = preprocess_dataset(
-        dataset['dirty_data'], dataset['clean_data'], dataset_name, verbose
-    )
+    preprocess_dataset(dataset, verbose)
+    dirty_data, clean_data, err_labels = dataset.dirty_data, dataset.clean_data, dataset.error_labels
 
     if verbose:
         print(f"Dataset shape: {dirty_data.shape}")
@@ -55,7 +52,6 @@ def run_label_propagation_experiment(dataset_name: str, sample_size: int = 20, s
         print(f"Feature extraction completed. Features for {len(features)} columns.")
 
     # Label propagation
-    print(f"Running label propagation (clusters={sample_size}, seed={seed})...")
     propagator = LabelPropagator(features, sample_size=sample_size, seed=seed)
     prediction_df = propagator.propagate_dataset_labels(err_labels)
 

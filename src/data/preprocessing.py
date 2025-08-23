@@ -7,6 +7,8 @@ from typing import Dict, Any, Tuple
 
 import pandas as pd
 
+import data
+
 
 class DataPreprocessor:
     """
@@ -29,15 +31,12 @@ class DataPreprocessor:
         self.enable_logging = enable_logging
         self.preprocessing_stats = {}
 
-    def preprocess_dataset(self, dirty_data: pd.DataFrame, clean_data: pd.DataFrame = None,
-                           dataset_name: str = None) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+    def preprocess_dataset(self, dataset: data.Dataset):
         """
         Preprocess a complete dataset by applying various cleaning rules.
 
         Args:
-            dirty_data: Dirty data with errors (required)
-            clean_data: Clean reference data (optional, if None will use dirty_data as reference)
-            dataset_name: Name of the dataset for logging and specific rules
+            dataset:
 
         Returns:
             Tuple of (processed_dirty_data, processed_clean_data, error_labels, preprocessing_stats)
@@ -46,35 +45,36 @@ class DataPreprocessor:
             If clean_data is None, dirty_data will be used for both clean and dirty processing,
             and error labels cannot be generated accurately.
         """
-        if dataset_name is None:
-            dataset_name = "unknown"
+        if dataset.name is None:
+            dataset.name = "unknown"
 
         # If no clean data provided, use dirty data as reference for preprocessing decisions
-        if clean_data is None:
-            clean_data = dirty_data.copy()
+        if dataset.clean_data is None:
+            dataset.clean_data = dataset.dirty_data.copy()
             clean_data_provided = False
             if self.enable_logging:
-                print(f"Preprocessing dataset '{dataset_name}' (dirty data only)...")
+                print(f"Preprocessing dataset '{dataset.name}' (dirty data only)...")
         else:
             clean_data_provided = True
             if self.enable_logging:
-                print(f"Preprocessing dataset '{dataset_name}' (clean + dirty data)...")
+                print(f"Preprocessing dataset '{dataset.name}' (clean + dirty data)...")
 
         # Initialize stats
         stats = {
-            'dataset_name': dataset_name,
+            'dataset_name': dataset.name,
             'clean_data_provided': clean_data_provided,
-            'original_shape': dirty_data.shape,
+            'original_shape': dataset.dirty_data.shape,
             'removed_columns': [],
             'removal_reasons': {},
             'final_shape': None
         }
 
         # Ensure column names match
-        clean_data.columns = dirty_data.columns
+        dataset.clean_data.columns = dataset.dirty_data.columns
 
         # Apply preprocessing steps in order
-        clean_processed, dirty_processed = self._remove_empty_columns(clean_data.copy(), dirty_data.copy(), stats)
+        clean_processed, dirty_processed = self._remove_empty_columns(dataset.clean_data.copy(),
+                                                                      dataset.dirty_data.copy(), stats)
         clean_processed, dirty_processed = self._remove_constant_columns(clean_processed, dirty_processed, stats)
         # Update final stats
         stats['final_shape'] = dirty_processed.shape
@@ -88,9 +88,11 @@ class DataPreprocessor:
             self._log_preprocessing_results(stats)
 
         # Store stats for later access
-        self.preprocessing_stats[dataset_name] = stats
+        self.preprocessing_stats[dataset.name] = stats
 
-        return dirty_processed, clean_processed, error_labels, stats
+        dataset.clean_data = clean_processed
+        dataset.dirty_data = dirty_processed
+        dataset.error_labels = error_labels
 
     def _remove_empty_columns(self, clean_data: pd.DataFrame, dirty_data: pd.DataFrame,
                               stats: Dict[str, Any], max_empty_ratio: float = 0.95) -> Tuple[
@@ -208,9 +210,7 @@ class DataPreprocessor:
 
 
 # Convenience functions
-def preprocess_dataset(dirty_data: pd.DataFrame, clean_data: pd.DataFrame = None,
-                       dataset_name: str = None, enable_logging: bool = True) -> Tuple[
-    pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+def preprocess_dataset(dataset: data.Dataset, enable_logging: bool = True):
     """
     Convenience function to preprocess a dataset.
 
@@ -224,4 +224,4 @@ def preprocess_dataset(dirty_data: pd.DataFrame, clean_data: pd.DataFrame = None
         Tuple of (processed_dirty_data, processed_clean_data, error_labels, stats)
     """
     preprocessor = DataPreprocessor(enable_logging=enable_logging)
-    return preprocessor.preprocess_dataset(dirty_data, clean_data, dataset_name)
+    preprocessor.preprocess_dataset(dataset)

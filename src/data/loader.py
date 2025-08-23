@@ -10,6 +10,18 @@ from typing import Dict, Any
 import pandas as pd
 
 
+class Dataset:
+    """数据集类，用于管理脏数据、干净数据、错误标签和规则"""
+
+    def __init__(self, name: str = None, dirty_data: pd.DataFrame = None, clean_data: pd.DataFrame = None,
+                 error_labels: pd.DataFrame = None, rules: Dict = None):
+        self.name = name
+        self.dirty_data = dirty_data
+        self.clean_data = clean_data
+        self.error_labels = error_labels
+        self.rules = rules
+
+
 class DatasetLoader:
     """
     Dataset loader for loading clean/dirty data and rule files.
@@ -53,7 +65,7 @@ class DatasetLoader:
                     datasets.append(item.name)
         return sorted(datasets)
 
-    def load_dataset(self, dataset_name: str) -> Dict[str, Any]:
+    def load_dataset(self, dataset_name: str) -> Dataset:
         """
         Load a complete dataset including clean data, dirty data, rules, and error labels.
 
@@ -84,21 +96,19 @@ class DatasetLoader:
         if not dataset_path.exists():
             raise FileNotFoundError(f"Dataset path does not exist: {dataset_path}")
 
-        result = {}
+        dataset = Dataset(name=dataset_name)
 
         # Load clean and dirty data using original read parameters
         clean_path = dataset_path / "clean.csv"
         dirty_path = dataset_path / "dirty.csv"
         if clean_path.exists():
-            result['clean_data'] = pd.read_csv(clean_path, dtype=str, na_values=[], keep_default_na=False)
+            dataset.clean_data = pd.read_csv(clean_path, dtype=str, na_values=[], keep_default_na=False)
         else:
             warnings.warn(f"Clean data file does not exist: {clean_path}")
-            result['clean_data'] = None
+            dataset.clean_data = None
 
         if dirty_path.exists():
-            result['dirty_data'] = pd.read_csv(dirty_path, dtype=str, na_values=[], keep_default_na=False)
-            # Generate error labels using original implementation logic
-            # result['error_labels'] = result['dirty_data'].ne(result['clean_data'])
+            dataset.dirty_data = pd.read_csv(dirty_path, dtype=str, na_values=[], keep_default_na=False)
         else:
             raise ValueError(f"Dirty data file does not exist: {dirty_path}")
 
@@ -107,51 +117,12 @@ class DatasetLoader:
         if rules_file.exists():
             rules_df = pd.read_json(rules_file)
             columns_df = pd.json_normalize(rules_df['columns'].tolist())
-            result['rules'] = columns_df.set_index('name').to_dict(orient='index')
+            dataset.rules = columns_df.set_index('name').to_dict(orient='index')
         else:
             warnings.warn(f"Rules file does not exist: {rules_file}")
-            result['rules'] = None
+            dataset.rules = None
 
-        return result
-
-    def load_clean_data(self, dataset_name: str) -> pd.DataFrame:
-        """
-        Load only the clean data for a specified dataset.
-
-        Args:
-            dataset_name: Name of the dataset to load
-
-        Returns:
-            DataFrame containing clean reference data
-        """
-        dataset = self.load_dataset(dataset_name)
-        return dataset['clean_data']
-
-    def load_dirty_data(self, dataset_name: str) -> pd.DataFrame:
-        """
-        Load only the dirty data for a specified dataset.
-
-        Args:
-            dataset_name: Name of the dataset to load
-
-        Returns:
-            DataFrame containing data with errors
-        """
-        dataset = self.load_dataset(dataset_name)
-        return dataset['dirty_data']
-
-    def load_rules(self, dataset_name: str) -> Dict[str, Any]:
-        """
-        Load only the data quality rules for a specified dataset.
-
-        Args:
-            dataset_name: Name of the dataset to load
-
-        Returns:
-            Dictionary containing processed rules indexed by column name
-        """
-        dataset = self.load_dataset(dataset_name)
-        return dataset['rules']
+        return dataset
 
     def get_dataset_info(self, dataset_name: str) -> Dict[str, Any]:
         """
@@ -178,19 +149,19 @@ class DatasetLoader:
 
         info = {
             'name': dataset_name,
-            'has_clean_data': dataset['clean_data'] is not None,
-            'has_dirty_data': dataset['dirty_data'] is not None,
-            'has_rules': dataset['rules'] is not None,
+            'has_clean_data': dataset.clean_data is not None,
+            'has_dirty_data': dataset.dirty_data is not None,
+            'has_rules': dataset.rules is not None,
         }
 
-        if dataset['clean_data'] is not None:
-            info['clean_shape'] = dataset['clean_data'].shape
-            info['columns'] = list(dataset['clean_data'].columns)
+        if dataset.clean_data is not None:
+            info['clean_shape'] = dataset.clean_data.shape
+            info['columns'] = list(dataset.clean_data.columns)
 
-        if dataset['dirty_data'] is not None:
-            info['dirty_shape'] = dataset['dirty_data'].shape
+        if dataset.dirty_data is not None:
+            info['dirty_shape'] = dataset.dirty_data.shape
 
-        if dataset['rules'] is not None:
-            info['num_rules'] = len(dataset['rules'])
+        if dataset.rules is not None:
+            info['num_rules'] = len(dataset.rules)
 
         return info
