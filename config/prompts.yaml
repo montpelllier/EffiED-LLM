@@ -1,23 +1,24 @@
 # 提示词配置文件
 prompts:
   error_detection:
+    system_prompt: |
+      You are an error detection assistant. Respond ONLY in valid JSON.
+
     base_instruction: |
       Instructions:
       - You are given a list of data rows extracted from a dataset, where the target column named `{column_name}`. Label each value from the target column as either an error or not an error. An error could be a typo or a formatting issue.
       - Only evaluate the `{column_name}` value.
       - Only label values you are confident about. If you are not sure, do not label it as an error.
-
     rule_instruction: |
       - If value does not follow the rules, label it as an error.
-      {rule_content}
-
-    input_template: |
-      Input:
-      {data_json}
+      
+      
+      Rules for column '{column}':
+      {rules}
 
     fewshot_template: |
       
-
+      
       Here are some examples:
 
       {examples}
@@ -28,10 +29,12 @@ prompts:
       Column: {column}
       Original value: {original_value}
       Corrected value: {clean_value}
-  rule_generation:
-    template: |
 
+    input_template: |
+      Input:
+      {data_json}
 
-      Rules for column '{column}':
-      {rules}
-
+    output_template: |
+      
+      Please fill in the "is_error" field (either `true` or `false`) in the following JSON template:
+      {output_json}

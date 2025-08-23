@@ -2,9 +2,10 @@
 Prompt configuration management module
 Manages all prompt templates using YAML configuration files
 """
-import yaml
 import os
 from typing import Dict, List, Optional, Any
+
+import yaml
 
 
 class PromptManager:
@@ -53,23 +54,26 @@ class PromptManager:
             raise KeyError(f"Prompt template not found: {category}.{template_name}")
 
     def generate_error_detection_prompt(self,
-                                      column_name: str,
-                                      data_json: str,
-                                      fewshot_examples: Optional[List[Dict]] = None,
-                                      rule_content: Optional[str] = None,
-                                      include_fewshot: bool = True,
-                                      include_rule: bool = True,
-                                      exclude_keys: List[str] = None) -> str:
+                                        column_name: str,
+                                        data_json: str,
+                                        label_json: str,
+                                        fewshot_examples: Optional[List[Dict]] = None,
+                                        rule_content: Optional[str] = None,
+                                        include_fewshot: bool = True,
+                                        include_rule: bool = True,
+                                        exclude_keys: List[str] = None) -> str:
         """
         Generate error detection prompt with configurable components
 
         Args:
             column_name: Target column name
             data_json: Data JSON string
+            label_json: Output template JSON string
             fewshot_examples: Few-shot example list
             rule_content: Rule content
             include_fewshot: Whether to include few-shot examples
             include_rule: Whether to include rules
+            exclude_keys:
 
         Returns:
             Complete error detection prompt
@@ -77,14 +81,16 @@ class PromptManager:
         if exclude_keys is None:
             exclude_keys = ['clean_value']
 
+        prompt = self.get_prompt_template('error_detection', 'system_prompt')
+
         # Start with general instruction (always included)
         general_instruction = self.get_prompt_template('error_detection', 'base_instruction')
-        prompt = general_instruction.format(column_name=column_name)
+        prompt += general_instruction.format(column_name=column_name)
 
         # Add rule instruction (if enabled and rule_content provided)
         if include_rule and rule_content:
             rule_instruction = self.get_prompt_template('error_detection', 'rule_instruction')
-            prompt += rule_instruction.format(rule_content=rule_content)
+            prompt += rule_instruction.format(column=column_name, rules=rule_content)
 
         # Add few-shot examples (if enabled and examples provided)
         if include_fewshot and fewshot_examples:
@@ -95,6 +101,9 @@ class PromptManager:
         # Add input template (always included)
         input_template = self.get_prompt_template('error_detection', 'input_template')
         prompt += input_template.format(data_json=data_json, column_name=column_name)
+
+        output_template = self.get_prompt_template('error_detection', 'output_template')
+        prompt += output_template.format(output_json=label_json)
 
         return prompt
 
@@ -119,7 +128,7 @@ class PromptManager:
 
         return examples_content
 
-    def generate_rule_prompt(self, column: str, rules: Dict[str, Any]) -> str:
+    def _generate_rule_prompt(self, column: str, rules: Dict[str, Any]) -> str:
         """
         Generate rule prompt
 
