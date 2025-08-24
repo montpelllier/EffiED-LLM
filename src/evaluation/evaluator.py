@@ -6,14 +6,14 @@ from typing import Dict, Any
 
 import pandas
 
-import evaluation
+from .metrics import MetricsCalculator
 
 
 class Evaluator:
     """Error detection result evaluator - simplified version"""
 
     def __init__(self):
-        self.metrics_calculator = evaluation.MetricsCalculator()
+        self.metrics_calculator = MetricsCalculator()
 
     def evaluate_detection_results(self, y_true: pandas.DataFrame, y_pred: pandas.DataFrame,
                                    dataset_name: str = None, model_name: str = None) -> Dict[str, Any]:
