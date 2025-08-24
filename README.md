@@ -1,6 +1,7 @@
 # Efficient Table Error Detection with LLMs
 
 This project leverages Large Language Models (LLMs) for efficient table error detection. It supports multiple datasets and models, including data preprocessing, feature extraction, error detection, and evaluation workflows.
+<img width="819" height="384" alt="framework" src="https://github.com/user-attachments/assets/c0b1ab6a-fd67-42a0-bce4-c63d52fcc70c" />
 
 ## Directory Structure
 
