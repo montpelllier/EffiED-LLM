@@ -3,11 +3,11 @@ Clustering and Label Propagation Module
 Implements feature clustering and label propagation methods
 """
 import warnings
-from typing import Dict, List, Tuple
+from typing import Dict
 
-import numpy
-import pandas
+import numpy as np
 import sklearn
+from pandas import DataFrame
 
 
 class LabelPropagator:
@@ -21,7 +21,7 @@ class LabelPropagator:
     4. Use labeled representatives to propagate labels to cluster members
     """
 
-    def __init__(self, features: Dict[str, pandas.DataFrame], cluster=None, sample_size=20, seed=20):
+    def __init__(self, features: Dict[str, DataFrame], cluster=None, sample_size=20, seed=20):
         """
         Initialize LabelPropagator with support for custom clustering object or default MiniBatchKMeans.
 
@@ -48,8 +48,7 @@ class LabelPropagator:
         self.representatives = {}
         self.propagated_labels = {}
 
-    def _cluster_feature(self, feature_dataframe: pandas.DataFrame, verbose: bool = False) -> Tuple[
-        numpy.ndarray, List[int]]:
+    def _cluster_feature(self, feature_dataframe: DataFrame, verbose: bool = False):
         """
         Cluster features using the provided cluster object.
 
@@ -67,14 +66,14 @@ class LabelPropagator:
         cluster_labels = self.cluster.fit_predict(feature_dataframe.values)
         centroids = self.cluster.cluster_centers_
 
-        cluster_num = numpy.max(cluster_labels) + 1
+        cluster_num = np.max(cluster_labels) + 1
         if verbose:
             print(f"Number of clusters formed: {cluster_num}")
 
         # Find representative samples for each cluster
         representatives = []
         for cluster_id in range(cluster_num):
-            cluster_indices = numpy.where(cluster_labels == cluster_id)[0]
+            cluster_indices = np.where(cluster_labels == cluster_id)[0]
 
             if len(cluster_indices) == 0:
                 representatives.append(-1)
@@ -87,8 +86,8 @@ class LabelPropagator:
 
             # Find the point closest to centroid as representative
             cluster_points = feature_dataframe.iloc[cluster_indices]
-            distances = numpy.linalg.norm(cluster_points - centroids[cluster_id], axis=1)
-            closest_idx_in_cluster = numpy.argmin(distances)
+            distances = np.linalg.norm(cluster_points - centroids[cluster_id], axis=1)
+            closest_idx_in_cluster = np.argmin(distances)
             representatives.append(cluster_indices[closest_idx_in_cluster])
 
         return cluster_labels, representatives
@@ -118,14 +117,14 @@ class LabelPropagator:
 
             if verbose:
                 print(
-                    f"Clustered column '{column}': {len(representatives)} representatives, {numpy.max(clusters) + 1} clusters")
+                    f"Clustered column '{column}': {len(representatives)} representatives, {np.max(clusters) + 1} clusters")
 
     def sample(self):
         """Sample the clustering centriods."""
         if not self.cluster_results or not self.representatives:
             self._cluster()
-        cluster_dataframe = pandas.DataFrame(self.cluster_results)
-        representatives_dataframe = pandas.DataFrame(self.representatives)
+        cluster_dataframe = DataFrame(self.cluster_results)
+        representatives_dataframe = DataFrame(self.representatives)
 
         return cluster_dataframe, representatives_dataframe
 
@@ -136,12 +135,9 @@ class LabelPropagator:
         Args:
             column_name: Name of the column to propagate labels for
             representative_labels: Dictionary mapping representative sample indices to their labels
-
-        Returns:
-            None (updates self.propagated_labels[column_name] in place)
         """
 
-        self.propagated_labels[column_name] = numpy.zeros(self.length, dtype=bool)
+        self.propagated_labels[column_name] = np.zeros(self.length, dtype=bool)
 
         for cluster_id, rep_idx in enumerate(self.representatives[column_name]):
             if rep_idx == -1:
@@ -152,10 +148,10 @@ class LabelPropagator:
                 warnings.warn(f"Sample {rep_idx} is not labeled, set to False.")
                 label = False
             # Propagate label to all members of this cluster
-            cluster_indices = numpy.where(self.cluster_results[column_name] == cluster_id)[0]
+            cluster_indices = np.where(self.cluster_results[column_name] == cluster_id)[0]
             self.propagated_labels[column_name][cluster_indices] = label
 
-    def propagate_dataset_labels(self, label_dataframe: pandas.DataFrame):
+    def propagate_dataset_labels(self, label_dataframe: DataFrame):
         """
         Propagate labels for the entire dataset using clustering results.
 
@@ -189,5 +185,5 @@ class LabelPropagator:
         """Get the propagation result."""
         if set(self.propagated_labels.keys()) != set(self.features.keys()):
             warnings.warn("Not full prediction!")
-        prediction_dataframe = pandas.DataFrame(self.propagated_labels)
+        prediction_dataframe = DataFrame(self.propagated_labels)
         return prediction_dataframe

@@ -6,8 +6,8 @@ import collections
 import warnings
 from typing import List, Tuple
 
-import numpy
-import pandas
+import numpy as np
+import pandas as pd
 import scipy
 import sklearn
 import transformers
@@ -62,7 +62,7 @@ class FeatureExtractor:
                 final_tokens.append(token)
         return final_tokens
 
-    def extract_pattern_feature(self, texts: List[str], char_config=None, tkn_config=None) -> pandas.DataFrame:
+    def extract_pattern_feature(self, texts: List[str], char_config=None, tkn_config=None) -> pd.DataFrame:
         """
         Extract comprehensive pattern features from text data.
 
@@ -80,7 +80,7 @@ class FeatureExtractor:
             DataFrame containing all extracted pattern features
         """
         if not texts:
-            return pandas.DataFrame()
+            return pd.DataFrame()
 
         # Extract basic features
         basic_features, basic_feat_names = self._extract_basic_features(texts)
@@ -102,9 +102,9 @@ class FeatureExtractor:
             }
         binned_matrix, bin_feat_names, token_counts = self._bin_tokens(texts, **tkn_config)
         token_cnts_scaled = self.minmax_scaler.fit_transform(
-            numpy.array(token_counts).reshape(-1, 1)
+            np.array(token_counts).reshape(-1, 1)
         )
-        token_feature = numpy.column_stack([binned_matrix, token_cnts_scaled])
+        token_feature = np.column_stack([binned_matrix, token_cnts_scaled])
         token_feat_names = bin_feat_names + ['token_count_scaled']
 
         pattern_feature = self._merge_features(
@@ -115,7 +115,7 @@ class FeatureExtractor:
         return pattern_feature
 
     @staticmethod
-    def extract_rule_feature(dataframe: pandas.DataFrame, rhs_col: str) -> pandas.DataFrame:
+    def extract_rule_feature(dataframe: pd.DataFrame, rhs_col: str) -> pd.DataFrame:
         """
         Generate functional dependency features (support and confidence) for DataFrame.
 
@@ -140,7 +140,7 @@ class FeatureExtractor:
             # Skip self-dependency (rhs_col -> rhs_col)
             if lhs_col == rhs_col:
                 # Create special features for self-dependency
-                feature_frame = pandas.DataFrame({
+                feature_frame = pd.DataFrame({
                     f"{lhs_col}_support": [1.0] * total_rows,  # Self support is always 1
                     f"{lhs_col}_confidence": [1.0] * total_rows  # Self confidence is always 1
                 })
@@ -164,7 +164,7 @@ class FeatureExtractor:
             feature_frames.append(merged[[f"{lhs_col}_support", f"{lhs_col}_confidence"]])
 
         # Concatenate all features
-        feature_df = pandas.concat(feature_frames, axis=1)
+        feature_df = pd.concat(feature_frames, axis=1)
 
         # Normalize feature values
         feature_df /= (len(lhs_cols) ** 0.5)
@@ -172,7 +172,7 @@ class FeatureExtractor:
         return feature_df
 
     @staticmethod
-    def _extract_basic_features(texts: List[str]) -> Tuple[numpy.ndarray, List[str]]:
+    def _extract_basic_features(texts: List[str]) -> Tuple[np.ndarray, List[str]]:
         """
         Extract basic statistical features from text data.
 
@@ -216,10 +216,10 @@ class FeatureExtractor:
                 digit_ratio, alpha_ratio, upper_ratio, punct_ratio
             ])
 
-        return numpy.array(features), feature_names
+        return np.array(features), feature_names
 
     @staticmethod
-    def _extract_character_feature(texts: List[str], config) -> Tuple[numpy.ndarray, List[str]]:
+    def _extract_character_feature(texts: List[str], config) -> Tuple[np.ndarray, List[str]]:
         """
         Extract character-level TF-IDF features.
 
@@ -236,7 +236,7 @@ class FeatureExtractor:
         return tfidf_matrix.toarray(), feature_names
 
     def _bin_tokens(self, texts: List[str], n_bins: int = 50, method: str = 'quantile',
-                    normalize: bool = True) -> Tuple[numpy.ndarray, List[str], List[int]]:
+                    normalize: bool = True) -> Tuple[np.ndarray, List[str], List[int]]:
         """
         Compute token binning features from text data (optimized version).
 
@@ -253,7 +253,7 @@ class FeatureExtractor:
             Tuple of (binned feature matrix, bin column names, token counts)
         """
         if not texts:
-            return numpy.array([]), [], []
+            return np.array([]), [], []
 
         # Batch tokenize and preprocess
         tokenized = [self.tokenize(self.llm_tokenizer, text) for text in texts]
@@ -271,34 +271,34 @@ class FeatureExtractor:
         # Calculate global token frequency
         token_counter = collections.Counter(all_tokens)
         unique_tokens = list(token_counter.keys())
-        token_freqs = numpy.array(list(token_counter.values()))
+        token_freqs = np.array(list(token_counter.values()))
 
         if len(token_freqs) == 0:
-            return numpy.zeros((len(texts), 1)), ["bin_tf_empty"], token_counts
+            return np.zeros((len(texts), 1)), ["bin_tf_empty"], token_counts
 
         # Optimize binning calculation
-        n_bins = min(n_bins, len(numpy.unique(token_freqs)))
+        n_bins = min(n_bins, len(np.unique(token_freqs)))
 
         if method == 'quantile':
-            percentiles = numpy.linspace(0, 100, n_bins)
-            bin_edges = numpy.percentile(token_freqs, percentiles)
+            percentiles = np.linspace(0, 100, n_bins)
+            bin_edges = np.percentile(token_freqs, percentiles)
         elif method == 'uniform':
-            bin_edges = numpy.linspace(token_freqs.min(), token_freqs.max(), n_bins)
+            bin_edges = np.linspace(token_freqs.min(), token_freqs.max(), n_bins)
         elif method == 'log':
             # Avoid log(0) issue
-            token_freqs_safe = numpy.maximum(token_freqs, 1)
-            log_freqs = numpy.log(token_freqs_safe)
-            log_edges = numpy.linspace(log_freqs.min(), log_freqs.max(), n_bins)
-            bin_edges = numpy.exp(log_edges)
+            token_freqs_safe = np.maximum(token_freqs, 1)
+            log_freqs = np.log(token_freqs_safe)
+            log_edges = np.linspace(log_freqs.min(), log_freqs.max(), n_bins)
+            bin_edges = np.exp(log_edges)
         else:
             raise ValueError(f"Invalid binning method '{method}'. Choose from 'quantile', 'uniform', or 'log'.")
 
         # Ensure bin_edges are unique and sorted
-        bin_edges = numpy.unique(bin_edges)
+        bin_edges = np.unique(bin_edges)
         real_n_bins = len(bin_edges)
 
         # Batch calculate bin indices
-        token_bin_indices = numpy.digitize(token_freqs, bin_edges) - 1
+        token_bin_indices = np.digitize(token_freqs, bin_edges) - 1
 
         # Build token to bin mapping
         token_to_bin = dict(zip(unique_tokens, token_bin_indices))
@@ -333,7 +333,7 @@ class FeatureExtractor:
         return binned_matrix, bin_labels, token_counts
 
     @staticmethod
-    def _merge_features(features: List[numpy.ndarray], feature_names: List[List[str]]) -> pandas.DataFrame:
+    def _merge_features(features: List[np.ndarray], feature_names: List[List[str]]) -> pd.DataFrame:
         """
         Merge multiple feature matrices into a single DataFrame.
 
@@ -345,17 +345,17 @@ class FeatureExtractor:
             Combined DataFrame with all features
         """
         if not features:
-            return pandas.DataFrame()
+            return pd.DataFrame()
 
-        feature_matrix = numpy.hstack(features)
+        feature_matrix = np.hstack(features)
 
         if not feature_names:
             feature_names = [['feat_{}'.format(i) for i in range(feature_matrix.shape[1])]]
         column_names = [name for names in feature_names for name in names]
 
-        return pandas.DataFrame(feature_matrix, columns=column_names)
+        return pd.DataFrame(feature_matrix, columns=column_names)
 
-    def extract_column_feature(self, dataframe: pandas.DataFrame, target_column: str) -> pandas.DataFrame:
+    def extract_column_feature(self, dataframe: pd.DataFrame, target_column: str) -> pd.DataFrame:
         """
         Generate comprehensive features for a given DataFrame and target column.
 
@@ -388,14 +388,14 @@ class FeatureExtractor:
         rule_feature = self.extract_rule_feature(dataframe, target_column)
 
         feature_parts = [pattern_feature, rule_feature]
-        feature_dataframe = pandas.concat(feature_parts, axis=1)
+        feature_dataframe = pd.concat(feature_parts, axis=1)
 
         scaled_features = self.standard_scaler.fit_transform(feature_dataframe)
-        feature_dataframe = pandas.DataFrame(scaled_features, columns=feature_dataframe.columns)
+        feature_dataframe = pd.DataFrame(scaled_features, columns=feature_dataframe.columns)
 
         return feature_dataframe
 
-    def extract_dataset_feature(self, dataframe: pandas.DataFrame):
+    def extract_dataset_feature(self, dataframe: pd.DataFrame):
         all_feature = {}
         for column in dataframe.columns:
             feature_dataframe = self.extract_column_feature(dataframe, column)
