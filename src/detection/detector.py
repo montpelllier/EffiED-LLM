@@ -1,155 +1,129 @@
-"""
-错误检测器
-基于LLM的数据错误检测主要逻辑
-"""
-import pandas as pd
-import numpy as np
-from typing import Dict, List, Any, Optional, Tuple
-from ..llm.base_llm import BaseLLM
-from .prompt_manager import PromptManager
-from .feature_extractor import FeatureExtractor
-from .detection_utils import DetectionUtils
+import json
+import time
+from typing import Dict, List
+
+import tqdm
+from pandas import DataFrame
+from pydantic import BaseModel
+
+import data
+import detection
+import llm
+
+
+class ErrorLabel(BaseModel):
+    row_id: int
+    is_error: bool
+
+
+class LabelList(BaseModel):
+    labels: list[ErrorLabel]
 
 
 class ErrorDetector:
-    """基于LLM的错误检测器"""
 
-    def __init__(self, llm: BaseLLM, prompt_manager: PromptManager = None):
-        self.llm = llm
-        self.prompt_manager = prompt_manager if prompt_manager else PromptManager()
-        self.feature_extractor = FeatureExtractor()
-        self.utils = DetectionUtils()
+    def __init__(self, dataset: data.Dataset, representatives_dataframe: DataFrame, model: llm.BaseLLM,
+                 strategies: List[str], fewshot: int, batch_size: int):
 
-    def detect_errors(self, data: pd.DataFrame, rules: Dict[str, Any] = None,
-                     detection_mode: str = 'zero_shot',
-                     few_shot_examples: List[Dict] = None,
-                     batch_size: int = 10) -> pd.DataFrame:
-        """
-        检测数据中的错误
+        self.dataset = dataset
+        self.llm = model
+        self.representatives = representatives_dataframe
 
-        Args:
-            data: 待检测的数据
-            rules: 数据质量规则
-            detection_mode: 检测模式 ('zero_shot', 'few_shot', 'rule_based')
-            few_shot_examples: few-shot示例
-            batch_size: 批处理大小
+        self.fewshot = fewshot
+        self.batch_size = batch_size
+        self._apply_prompt_strategies(strategies)
 
-        Returns:
-            错误标签DataFrame，1表示错误，0表示正确
-        """
-        error_labels = pd.DataFrame(0, index=data.index, columns=data.columns)
+    def _apply_prompt_strategies(self, strategies):
+        dirty_data = self.dataset.dirty_data
 
-        # 按列进行错误检测
-        for column in data.columns:
-            column_errors = self._detect_column_errors(
-                data[column], column, rules, detection_mode,
-                few_shot_examples, batch_size
-            )
-            error_labels[column] = column_errors
+        self.column_map = {}
+        self.prompt_config = {}
+        for strategy_name in strategies:
+            if strategy_name == 'ZS-I':
+                self.prompt_config['include_rule'] = False
+            elif strategy_name == 'ZS-R':
+                self.prompt_config['include_rule'] = True
+            elif strategy_name == 'V':
+                for column in dirty_data.columns:
+                    self.column_map[column] = [column]
+            elif strategy_name == 'A':
+                nmi_matrix = detection.utils.compute_nmi_matrix(dirty_data)
+                related_col_dict = detection.utils.get_top_nmi_relations(nmi_matrix, max_attr=5, min_attr=1)
+                for column in dirty_data.columns:
+                    self.column_map[column] = [column] + related_col_dict[column]
 
-        return error_labels
+        self.prompt_config['include_fewshot'] = self.fewshot > 0
 
-    def _detect_column_errors(self, series: pd.Series, column_name: str,
-                             rules: Dict[str, Any] = None,
-                             detection_mode: str = 'zero_shot',
-                             few_shot_examples: List[Dict] = None,
-                             batch_size: int = 10) -> pd.Series:
-        """检测单列的错误"""
+    def detect_errors(self) -> Dict[str, Dict[int, bool]]:
+        result = {}
+        for column in tqdm.tqdm(self.dataset.dirty_data.columns):
+            result[column] = self._detect_column_errors(column)
 
-        # 提取列的规则信息
-        column_rule = self._get_column_rule(column_name, rules)
+        return result
 
-        # 分批处理数据
-        batches = self.utils.create_batches(series, batch_size)
-        all_predictions = []
+    def _detect_column_errors(self, column_name: str) -> Dict[int, bool]:
+        column_result = {}
+        ditry_data = self.dataset.dirty_data
 
-        for batch_data, batch_indices in batches:
-            # 生成提示词
-            if detection_mode == 'zero_shot':
-                prompt = self.prompt_manager.generate_zero_shot_prompt(
-                    batch_data, column_name, column_rule
-                )
-            elif detection_mode == 'few_shot':
-                prompt = self.prompt_manager.generate_few_shot_prompt(
-                    batch_data, column_name, column_rule, few_shot_examples
-                )
-            elif detection_mode == 'rule_based':
-                prompt = self.prompt_manager.generate_rule_based_prompt(
-                    batch_data, column_name, column_rule
-                )
+        column_lst = self.column_map[column_name]
+        column_repre_idx = self.representatives[column_name].astype(int).tolist()
+        data_rows = detection.utils.generate_data_rows(ditry_data, column_lst, column_repre_idx)
+
+        for i in range(0, len(data_rows), self.batch_size):
+            batch_data = data_rows[i:i + self.batch_size]
+            row_ids = [row['row_id'] for row in batch_data]
+            label_list = {
+                "labels": [{"row_id": rid, "is_error": None} for rid in row_ids]
+            }
+            output_json = json.dumps(label_list, indent=2, ensure_ascii=False)
+            batch_json = json.dumps(batch_data, indent=2, ensure_ascii=False)
+            fewshot_examples = None
+            if self.fewshot > 0:
+                fewshot_examples = detection.utils.select_few_shot_examples(self.dataset, column_name, self.fewshot,
+                                                                            strategy='balanced')
+
+            prompt = llm.prompt_manager.generate_error_detection_prompt(column_name=column_name,
+                                                                        data_json=batch_json,
+                                                                        label_json=output_json,
+                                                                        fewshot_examples=fewshot_examples,
+                                                                        rule_content=self.dataset.rules[column_name],
+                                                                        **self.prompt_config)
+
+            delay = 0
+            if isinstance(self.llm, llm.OllamaLLM):
+                llm_config = {
+                    'think': False,
+                    'format': LabelList.model_json_schema(),
+                    'options': {
+                        'temperature': 0,
+                        'seed': 42
+                    }
+                }
+            elif isinstance(self.llm, llm.OpenAILLM):
+                llm_config = {
+                    'temperature': 0,
+                }
+                delay = 10
             else:
-                raise ValueError(f"Unsupported detection mode: {detection_mode}")
+                llm_config = {}
 
-            # 调用LLM
+            llm_response = self.llm.generate(prompt, **llm_config)
+            if delay > 0:
+                time.sleep(delay)
+
+            json_str = detection.utils.extract_label_list_json(llm_response)
             try:
-                response = self.llm.generate(prompt)
-                batch_predictions = self._parse_llm_response(response, len(batch_data))
+                parsed = LabelList.model_validate_json(json_str)
             except Exception as e:
-                print(f"LLM调用失败: {str(e)}")
-                # 默认预测为无错误
-                batch_predictions = [0] * len(batch_data)
+                print(f"⚠️ERROR: Failed to parse JSON response: {json_str} with error {e}")
+                continue
 
-            all_predictions.extend(batch_predictions)
+            for label in parsed.labels:
+                idx = int(label.row_id)
+                if idx not in column_repre_idx:
+                    print(f"⚠️WARNING: Row index {idx} not found in samples for column '{column_name}'")
+                    continue
+                else:
+                    column_result[idx] = label.is_error
 
-        return pd.Series(all_predictions, index=series.index)
-
-    def _get_column_rule(self, column_name: str, rules: Dict[str, Any]) -> Dict[str, Any]:
-        """获取指定列的规则信息"""
-        if not rules or 'columns' not in rules:
-            return {}
-
-        for col_rule in rules['columns']:
-            if col_rule.get('name') == column_name:
-                return col_rule
-
-        return {}
-
-    def _parse_llm_response(self, response: str, expected_length: int) -> List[int]:
-        """解析LLM响应，提取错误标签"""
-        try:
-            # 尝试解析JSON格式的响应
-            labels = self.utils.extract_labels_from_json(response)
-            if labels and len(labels) == expected_length:
-                return labels
-        except:
-            pass
-
-        try:
-            # 尝试解析简单的数字列表
-            labels = self.utils.extract_labels_from_text(response)
-            if labels and len(labels) == expected_length:
-                return labels
-        except:
-            pass
-
-        # 如果解析失败，返回默认值
-        print(f"警告: 无法解析LLM响应，使用默认值。响应内容: {response[:100]}...")
-        return [0] * expected_length
-
-    def detect_errors_with_confidence(self, data: pd.DataFrame,
-                                    rules: Dict[str, Any] = None,
-                                    detection_mode: str = 'zero_shot',
-                                    threshold: float = 0.5) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """
-        检测错误并返回置信度
-
-        Returns:
-            (error_labels, confidence_scores)
-        """
-        # 这里可以实现更复杂的置信度计算逻辑
-        error_labels = self.detect_errors(data, rules, detection_mode)
-
-        # 简单的置信度计算（可以根据需要改进）
-        confidence_scores = pd.DataFrame(
-            np.where(error_labels == 1, 0.8, 0.9),  # 错误预测置信度0.8，正确预测0.9
-            index=data.index,
-            columns=data.columns
-        )
-
-        return error_labels, confidence_scores
-
-    def evaluate_detection_quality(self, predictions: pd.DataFrame,
-                                 ground_truth: pd.DataFrame) -> Dict[str, Any]:
-        """评估检测质量"""
-        from ..evaluation.metrics import calculate_metrics
-        return calculate_metrics(ground_truth, predictions)
+        return column_result
