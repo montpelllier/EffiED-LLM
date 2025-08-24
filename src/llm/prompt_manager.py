@@ -60,8 +60,7 @@ class PromptManager:
                                         fewshot_examples: Optional[List[Dict]] = None,
                                         rule_content: Optional[str] = None,
                                         include_fewshot: bool = True,
-                                        include_rule: bool = True,
-                                        exclude_keys: List[str] = None) -> str:
+                                        include_rule: bool = True) -> str:
         """
         Generate error detection prompt with configurable components
 
@@ -78,8 +77,6 @@ class PromptManager:
         Returns:
             Complete error detection prompt
         """
-        if exclude_keys is None:
-            exclude_keys = ['clean_value']
 
         prompt = self.get_prompt_template('error_detection', 'system_prompt')
 
@@ -94,7 +91,7 @@ class PromptManager:
 
         # Add few-shot examples (if enabled and examples provided)
         if include_fewshot and fewshot_examples:
-            fewshot_content = self._generate_fewshot_examples(column_name, fewshot_examples, exclude_keys)
+            fewshot_content = self._generate_fewshot_examples(column_name, fewshot_examples)
             fewshot_template = self.get_prompt_template('error_detection', 'fewshot_template')
             prompt += fewshot_template.format(examples=fewshot_content)
 
@@ -107,8 +104,11 @@ class PromptManager:
 
         return prompt
 
-    def _generate_fewshot_examples(self, column: str, examples: List[Dict], exclude_keys: List[str]) -> str:
+    def _generate_fewshot_examples(self, column: str, examples: List[Dict], exclude_keys=None) -> str:
         """Generate few-shot example content"""
+        if exclude_keys is None:
+            exclude_keys = ['clean_value']
+
         example_template = self.get_prompt_template('error_detection', 'example_template')
         examples_content = ""
 

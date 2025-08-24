@@ -1,8 +1,10 @@
+import time
+
 import httpx
 import openai
 
 from .base import BaseLLM
-import time
+
 
 class OpenAILLM(BaseLLM):
     def __init__(self, url, key, measure=False, **kwargs):
