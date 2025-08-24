@@ -6,9 +6,10 @@ import tqdm
 from pandas import DataFrame
 from pydantic import BaseModel
 
-import data
-import detection
 import llm
+from data import Dataset
+from .utils import compute_nmi_matrix, get_top_nmi_relations, generate_data_rows, select_few_shot_examples, \
+    extract_label_list_json
 
 
 class ErrorLabel(BaseModel):
@@ -22,7 +23,7 @@ class LabelList(BaseModel):
 
 class ErrorDetector:
 
-    def __init__(self, dataset: data.Dataset, representatives_dataframe: DataFrame, model: llm.BaseLLM,
+    def __init__(self, dataset: Dataset, representatives_dataframe: DataFrame, model: llm.BaseLLM,
                  strategies: List[str], fewshot: int, batch_size: int):
 
         self.dataset = dataset
@@ -47,8 +48,8 @@ class ErrorDetector:
                 for column in dirty_data.columns:
                     self.column_map[column] = [column]
             elif strategy_name == 'A':
-                nmi_matrix = detection.utils.compute_nmi_matrix(dirty_data)
-                related_col_dict = detection.utils.get_top_nmi_relations(nmi_matrix, max_attr=5, min_attr=1)
+                nmi_matrix = compute_nmi_matrix(dirty_data)
+                related_col_dict = get_top_nmi_relations(nmi_matrix, max_attr=5, min_attr=1)
                 for column in dirty_data.columns:
                     self.column_map[column] = [column] + related_col_dict[column]
 
@@ -67,7 +68,7 @@ class ErrorDetector:
 
         column_lst = self.column_map[column_name]
         column_repre_idx = self.representatives[column_name].astype(int).tolist()
-        data_rows = detection.utils.generate_data_rows(ditry_data, column_lst, column_repre_idx)
+        data_rows = generate_data_rows(ditry_data, column_lst, column_repre_idx)
 
         for i in range(0, len(data_rows), self.batch_size):
             batch_data = data_rows[i:i + self.batch_size]
@@ -79,8 +80,8 @@ class ErrorDetector:
             batch_json = json.dumps(batch_data, indent=2, ensure_ascii=False)
             fewshot_examples = None
             if self.fewshot > 0:
-                fewshot_examples = detection.utils.select_few_shot_examples(self.dataset, column_name, self.fewshot,
-                                                                            strategy='balanced')
+                fewshot_examples = select_few_shot_examples(self.dataset, column_name, self.fewshot,
+                                                            strategy='balanced')
 
             prompt = llm.prompt_manager.generate_error_detection_prompt(column_name=column_name,
                                                                         data_json=batch_json,
@@ -111,7 +112,7 @@ class ErrorDetector:
             if delay > 0:
                 time.sleep(delay)
 
-            json_str = detection.utils.extract_label_list_json(llm_response)
+            json_str = extract_label_list_json(llm_response)
             try:
                 parsed = LabelList.model_validate_json(json_str)
             except Exception as e:
